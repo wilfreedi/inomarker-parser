@@ -8,6 +8,9 @@ use PDO;
 
 final class SiteRepository
 {
+    private const PROGRESS_RECENT_URLS_LIMIT = 25;
+    private const PROGRESS_LOG_LIMIT = 250;
+
     public function __construct(private readonly PDO $pdo)
     {
     }
@@ -107,6 +110,7 @@ final class SiteRepository
                      progress_pages = 0,
                      progress_current_url = NULL,
                      progress_recent_urls = NULL,
+                     progress_log = NULL,
                      progress_updated_at = NULL,
                      updated_at = :updated_at
                  WHERE id = :id"
@@ -135,6 +139,7 @@ final class SiteRepository
             progress_pages = 0,
             progress_current_url = NULL,
             progress_recent_urls = NULL,
+            progress_log = NULL,
             progress_updated_at = NULL,
             updated_at = :updated_at
         WHERE id = :id
@@ -200,6 +205,7 @@ final class SiteRepository
                          progress_pages = 0,
                          progress_current_url = NULL,
                          progress_recent_urls = NULL,
+                         progress_log = NULL,
                          progress_updated_at = NULL,
                          updated_at = ?
                      WHERE id IN ({$placeholders})"
@@ -279,6 +285,7 @@ final class SiteRepository
                  progress_pages = 0,
                  progress_current_url = NULL,
                  progress_recent_urls = NULL,
+                 progress_log = NULL,
                  progress_updated_at = NULL,
                  updated_at = :updated_at
              WHERE id = :id"
@@ -298,6 +305,7 @@ final class SiteRepository
                  progress_pages = 0,
                  progress_current_url = NULL,
                  progress_recent_urls = NULL,
+                 progress_log = NULL,
                  progress_updated_at = NULL,
                  updated_at = :updated_at
              WHERE id = :id"
@@ -321,6 +329,7 @@ final class SiteRepository
                  progress_pages = 0,
                  progress_current_url = NULL,
                  progress_recent_urls = NULL,
+                 progress_log = NULL,
                  progress_updated_at = NULL,
                  updated_at = :updated_at
              WHERE id = :id"
@@ -389,6 +398,7 @@ final class SiteRepository
                  progress_pages = 0,
                  progress_current_url = NULL,
                  progress_recent_urls = NULL,
+                 progress_log = NULL,
                  progress_updated_at = NULL,
                  updated_at = ?
              WHERE id IN ({$placeholders})"
@@ -403,7 +413,13 @@ final class SiteRepository
         $stmt->execute();
     }
 
-    public function updateProgress(int $siteId, int $pagesVisited, string $currentUrl): void
+    public function updateProgress(
+        int $siteId,
+        int $pagesVisited,
+        string $currentUrl,
+        ?string $eventMessage = null,
+        string $eventLevel = 'info',
+    ): void
     {
         $recentUrls = $this->loadRecentProgressUrls($siteId);
         if ($currentUrl !== '') {
@@ -412,7 +428,15 @@ final class SiteRepository
                 static fn (string $url): bool => $url !== $currentUrl
             ));
             array_unshift($recentUrls, $currentUrl);
-            $recentUrls = array_slice($recentUrls, 0, 25);
+            $recentUrls = array_slice($recentUrls, 0, self::PROGRESS_RECENT_URLS_LIMIT);
+        }
+
+        $preparedEvent = $this->prepareProgressLogEntry($eventMessage, $eventLevel);
+        $progressLogPayload = null;
+        if ($preparedEvent !== null) {
+            $logs = $this->loadProgressLogs($siteId);
+            $logs = $this->appendPreparedLogEntry($logs, $preparedEvent);
+            $progressLogPayload = $logs === [] ? null : json_encode($logs, JSON_THROW_ON_ERROR);
         }
 
         $stmt = $this->pdo->prepare(
@@ -420,6 +444,7 @@ final class SiteRepository
              SET progress_pages = :progress_pages,
                  progress_current_url = :progress_current_url,
                  progress_recent_urls = :progress_recent_urls,
+                 progress_log = COALESCE(:progress_log, progress_log),
                  progress_updated_at = :progress_updated_at,
                  updated_at = :updated_at
              WHERE id = :id
@@ -430,6 +455,45 @@ final class SiteRepository
             ':progress_pages' => max(0, $pagesVisited),
             ':progress_current_url' => $currentUrl !== '' ? mb_substr($currentUrl, 0, 1000) : null,
             ':progress_recent_urls' => $recentUrls === [] ? null : json_encode($recentUrls, JSON_THROW_ON_ERROR),
+            ':progress_log' => $progressLogPayload,
+            ':progress_updated_at' => $now,
+            ':updated_at' => $now,
+            ':id' => $siteId,
+        ]);
+    }
+
+    public function appendProgressLog(
+        int $siteId,
+        string $message,
+        string $level = 'info',
+        bool $onlyWhenRunning = true,
+    ): void {
+        $preparedEvent = $this->prepareProgressLogEntry($message, $level);
+        if ($preparedEvent === null) {
+            return;
+        }
+
+        $site = $this->findById($siteId);
+        if ($site === null) {
+            return;
+        }
+        if ($onlyWhenRunning && (string) ($site['status'] ?? '') !== 'running') {
+            return;
+        }
+
+        $logs = $this->decodeProgressLogs((string) ($site['progress_log'] ?? ''));
+        $logs = $this->appendPreparedLogEntry($logs, $preparedEvent);
+
+        $stmt = $this->pdo->prepare(
+            "UPDATE sites
+             SET progress_log = :progress_log,
+                 progress_updated_at = :progress_updated_at,
+                 updated_at = :updated_at
+             WHERE id = :id"
+        );
+        $now = $this->now();
+        $stmt->execute([
+            ':progress_log' => $logs === [] ? null : json_encode($logs, JSON_THROW_ON_ERROR),
             ':progress_updated_at' => $now,
             ':updated_at' => $now,
             ':id' => $siteId,
@@ -441,6 +505,25 @@ final class SiteRepository
     {
         $limit = max(1, $limit);
         return array_slice($this->loadRecentProgressUrls($siteId), 0, $limit);
+    }
+
+    /** @return array<int, array{at:string,level:string,message:string}> */
+    public function progressLogs(int $siteId, int $limit = self::PROGRESS_LOG_LIMIT): array
+    {
+        $limit = max(1, $limit);
+        $stmt = $this->pdo->prepare('SELECT progress_log FROM sites WHERE id = :id');
+        $stmt->execute([':id' => $siteId]);
+        $raw = $stmt->fetchColumn();
+        if (!is_string($raw) || trim($raw) === '') {
+            return [];
+        }
+
+        $logs = $this->decodeProgressLogs($raw);
+        if ($logs === []) {
+            return [];
+        }
+
+        return array_slice($logs, -$limit);
     }
 
     private function normalizeBaseUrl(string $url): string
@@ -505,5 +588,112 @@ final class SiteRepository
         }
 
         return array_values(array_unique($urls));
+    }
+
+    /** @return array<int, array{at:string,level:string,message:string}> */
+    private function loadProgressLogs(int $siteId): array
+    {
+        $stmt = $this->pdo->prepare('SELECT progress_log FROM sites WHERE id = :id');
+        $stmt->execute([':id' => $siteId]);
+        $raw = $stmt->fetchColumn();
+        if (!is_string($raw) || trim($raw) === '') {
+            return [];
+        }
+
+        return $this->decodeProgressLogs($raw);
+    }
+
+    /**
+     * @param array<int, array{at:string,level:string,message:string}> $logs
+     * @param array{at:string,level:string,message:string} $entry
+     * @return array<int, array{at:string,level:string,message:string}>
+     */
+    private function appendPreparedLogEntry(array $logs, array $entry): array
+    {
+        $last = $logs !== [] ? $logs[array_key_last($logs)] : null;
+        if (
+            is_array($last)
+            && ($last['message'] ?? '') === $entry['message']
+            && ($last['level'] ?? 'info') === $entry['level']
+        ) {
+            return $logs;
+        }
+
+        $logs[] = $entry;
+        if (count($logs) > self::PROGRESS_LOG_LIMIT) {
+            $logs = array_slice($logs, -self::PROGRESS_LOG_LIMIT);
+        }
+
+        return array_values($logs);
+    }
+
+    /** @return array{at:string,level:string,message:string}|null */
+    private function prepareProgressLogEntry(?string $message, string $level): ?array
+    {
+        $cleanMessage = trim((string) $message);
+        if ($cleanMessage === '') {
+            return null;
+        }
+
+        $normalizedLevel = $this->normalizeLogLevel($level);
+        return [
+            'at' => $this->now(),
+            'level' => $normalizedLevel,
+            'message' => mb_substr($cleanMessage, 0, 500),
+        ];
+    }
+
+    /** @return array<int, array{at:string,level:string,message:string}> */
+    private function decodeProgressLogs(string $raw): array
+    {
+        try {
+            /** @var mixed $decoded */
+            $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\Throwable) {
+            return [];
+        }
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $logs = [];
+        foreach ($decoded as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $message = trim((string) ($item['message'] ?? ''));
+            if ($message === '') {
+                continue;
+            }
+            $at = trim((string) ($item['at'] ?? ''));
+            if ($at === '') {
+                $at = $this->now();
+            }
+            $logs[] = [
+                'at' => mb_substr($at, 0, 32),
+                'level' => $this->normalizeLogLevel((string) ($item['level'] ?? 'info')),
+                'message' => mb_substr($message, 0, 500),
+            ];
+        }
+
+        if ($logs === []) {
+            return [];
+        }
+
+        if (count($logs) > self::PROGRESS_LOG_LIMIT) {
+            $logs = array_slice($logs, -self::PROGRESS_LOG_LIMIT);
+        }
+
+        return array_values($logs);
+    }
+
+    private function normalizeLogLevel(string $level): string
+    {
+        $level = trim(mb_strtolower($level));
+        if (!in_array($level, ['info', 'warn', 'error', 'debug'], true)) {
+            return 'info';
+        }
+
+        return $level;
     }
 }

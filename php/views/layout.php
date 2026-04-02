@@ -280,6 +280,38 @@ declare(strict_types=1);
             font-size: 12px;
             line-height: 1.4;
         }
+        .log-console {
+            border: 1px solid #1f2937;
+            background: #0b1220;
+            color: #e5e7eb;
+            border-radius: 10px;
+            max-height: 340px;
+            overflow: auto;
+            padding: 10px;
+        }
+        .log-line {
+            display: flex;
+            gap: 8px;
+            align-items: flex-start;
+            padding: 3px 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .log-line-time {
+            color: #94a3b8;
+            flex: 0 0 auto;
+        }
+        .log-line-level {
+            font-weight: 700;
+            flex: 0 0 auto;
+        }
+        .log-line-msg {
+            flex: 1 1 auto;
+        }
+        .log-level-info .log-line-level { color: #93c5fd; }
+        .log-level-warn .log-line-level { color: #fcd34d; }
+        .log-level-error .log-line-level { color: #fca5a5; }
+        .log-level-debug .log-line-level { color: #c4b5fd; }
         @media (max-width: 900px) {
             .half { grid-column: 1 / -1; }
             .third { grid-column: 1 / -1; }

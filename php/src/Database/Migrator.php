@@ -35,6 +35,7 @@ final class Migrator
                 progress_pages INTEGER NOT NULL DEFAULT 0,
                 progress_current_url TEXT NULL,
                 progress_recent_urls TEXT NULL,
+                progress_log TEXT NULL,
                 progress_updated_at TEXT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -102,6 +103,7 @@ final class Migrator
         $this->ensureColumn('sites', 'progress_pages', 'INTEGER NOT NULL DEFAULT 0');
         $this->ensureColumn('sites', 'progress_current_url', 'TEXT NULL');
         $this->ensureColumn('sites', 'progress_recent_urls', 'TEXT NULL');
+        $this->ensureColumn('sites', 'progress_log', 'TEXT NULL');
         $this->ensureColumn('sites', 'progress_updated_at', 'TEXT NULL');
         $this->pdo->exec(
             "UPDATE pages

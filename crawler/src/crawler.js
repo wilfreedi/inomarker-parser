@@ -431,6 +431,8 @@ async function discoverUrlsFromSitemaps(options) {
   const origin = options.origin;
   const siteHost = options.siteHost;
   const abortSignal = options.abortSignal || null;
+  const progressCallback = options.progressCallback || null;
+  const pagesVisited = Math.max(0, Number(options.pagesVisited || 0));
   const crawlDeadlineAt = Number(options.crawlDeadlineAt || Date.now() + 30_000);
   const discoveryMaxMs = Math.max(1_000, Number(options.discoveryMaxMs || 45_000));
   const requestTimeoutMs = Math.max(1_000, Number(options.requestTimeoutMs || 8_000));
@@ -467,15 +469,33 @@ async function discoverUrlsFromSitemaps(options) {
   };
 
   const robotsUrl = new URL("/robots.txt", origin).toString();
+  await reportProgress(progressCallback, {
+    pagesVisited,
+    currentUrl: robotsUrl,
+    event: "Проверка robots.txt и sitemap",
+    eventLevel: "info"
+  });
   const robotsText = await fetchTextWithTimeout(robotsUrl, requestTimeoutMs);
   const sitemapCandidates = extractSitemapDirectives(robotsText);
   if (sitemapCandidates.length === 0) {
     enqueueSitemap(new URL("/sitemap.xml", origin).toString(), 0);
+    await reportProgress(progressCallback, {
+      pagesVisited,
+      currentUrl: "",
+      event: "В robots.txt sitemap не найден, пробуем /sitemap.xml",
+      eventLevel: "warn"
+    });
   } else {
     for (const sitemapUrl of sitemapCandidates) {
       enqueueSitemap(sitemapUrl, 0);
     }
     enqueueSitemap(new URL("/sitemap.xml", origin).toString(), 0);
+    await reportProgress(progressCallback, {
+      pagesVisited,
+      currentUrl: "",
+      event: `Найдено sitemap в robots.txt: ${sitemapCandidates.length}`,
+      eventLevel: "info"
+    });
   }
 
   let fetchedSitemapFiles = 0;
@@ -498,6 +518,14 @@ async function discoverUrlsFromSitemaps(options) {
 
     const xmlBody = await fetchTextWithTimeout(current.url, requestTimeoutMs);
     fetchedSitemapFiles++;
+    if (fetchedSitemapFiles <= 3 || fetchedSitemapFiles % 10 === 0) {
+      await reportProgress(progressCallback, {
+        pagesVisited,
+        currentUrl: current.url,
+        event: `Обработка sitemap #${fetchedSitemapFiles}`,
+        eventLevel: "debug"
+      });
+    }
     if (xmlBody === "") {
       continue;
     }
@@ -549,6 +577,13 @@ async function discoverUrlsFromSitemaps(options) {
     }
   }
 
+  await reportProgress(progressCallback, {
+    pagesVisited,
+    currentUrl: "",
+    event: `Сбор sitemap завершен: файлов ${fetchedSitemapFiles}, URL ${discovered.length}`,
+    eventLevel: "info"
+  });
+
   return discovered;
 }
 
@@ -567,6 +602,9 @@ async function reportProgress(progressCallback, progressPayload) {
   }
 
   try {
+    const event = String(progressPayload.event || "").trim();
+    const eventLevelRaw = String(progressPayload.eventLevel || "info").trim().toLowerCase();
+    const eventLevel = ["info", "warn", "error", "debug"].includes(eventLevelRaw) ? eventLevelRaw : "info";
     await fetch(progressCallback.url, {
       method: "POST",
       headers,
@@ -574,7 +612,9 @@ async function reportProgress(progressCallback, progressPayload) {
         siteId: Number(progressCallback.siteId || 0),
         runId: Number(progressCallback.runId || 0),
         pagesVisited: Number(progressPayload.pagesVisited || 0),
-        currentUrl: progressPayload.currentUrl || ""
+        currentUrl: progressPayload.currentUrl || "",
+        event: event,
+        eventLevel: eventLevel
       }),
       signal: controller.signal
     });
@@ -693,7 +733,9 @@ async function crawlSite(options) {
   try {
     await reportProgress(progressCallback, {
       pagesVisited: 0,
-      currentUrl: startUrl
+      currentUrl: startUrl,
+      event: "Запуск crawler: старт обхода сайта",
+      eventLevel: "info"
     });
 
     if (sitemapEnabled && remainingMs(deadlineAt) > 2000) {
@@ -701,6 +743,8 @@ async function crawlSite(options) {
         origin,
         siteHost,
         abortSignal,
+        progressCallback,
+        pagesVisited: 0,
         crawlDeadlineAt: deadlineAt,
         discoveryMaxMs: sitemapDiscoveryMaxMs,
         requestTimeoutMs: sitemapRequestTimeoutMs,
@@ -716,6 +760,12 @@ async function crawlSite(options) {
         queue.push({ url: sitemapUrl, depth: 1, source: "sitemap" });
         queued.add(sitemapUrl);
       }
+      await reportProgress(progressCallback, {
+        pagesVisited: 0,
+        currentUrl: "",
+        event: `Очередь пополнена из sitemap: ${sitemapUrls.length} URL`,
+        eventLevel: "info"
+      });
     }
 
     let shouldPauseBeforeNextRequest = false;
@@ -754,6 +804,16 @@ async function crawlSite(options) {
       const pageDeadlineAt = Math.min(deadlineAt, Date.now() + pageMaxMs);
 
       try {
+        const shouldEmitPageStartLog = pages.length < 10 || (pages.length + 1) % 25 === 0;
+        if (shouldEmitPageStartLog) {
+          const sourceLabel = current.source === "sitemap" ? "sitemap" : "links";
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: `Проверка страницы (${sourceLabel}): ${current.url}`,
+            eventLevel: "debug"
+          });
+        }
         const remainingBeforeNavMs = deadlineAt - Date.now();
         const remainingForPageMs = pageDeadlineAt - Date.now();
         if (remainingBeforeNavMs <= 1500 || remainingForPageMs <= 1000) {
@@ -816,6 +876,12 @@ async function crawlSite(options) {
       } catch (error) {
         pacer.markResponse(503);
         await page.evaluate(() => window.stop()).catch(() => undefined);
+        await reportProgress(progressCallback, {
+          pagesVisited: pages.length,
+          currentUrl: current.url,
+          event: `Ошибка страницы: ${current.url}`,
+          eventLevel: "warn"
+        });
         title = "";
         text = "";
         pageLinks = [];
@@ -866,7 +932,9 @@ async function crawlSite(options) {
     }
     await reportProgress(progressCallback, {
       pagesVisited: pages.length,
-      currentUrl: ""
+      currentUrl: "",
+      event: `Обход завершен: ${pages.length} страниц, причина=${stopReason}`,
+      eventLevel: stopReason === "queue_empty" ? "info" : "warn"
     });
   } finally {
     if (abortSignal && typeof abortSignal.removeEventListener === "function") {

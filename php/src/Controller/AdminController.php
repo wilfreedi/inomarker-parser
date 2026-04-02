@@ -282,6 +282,8 @@ final class AdminController
         $runId = (int) ($decoded['runId'] ?? 0);
         $pagesVisited = (int) ($decoded['pagesVisited'] ?? 0);
         $currentUrl = trim((string) ($decoded['currentUrl'] ?? ''));
+        $eventMessage = trim((string) ($decoded['event'] ?? ''));
+        $eventLevel = trim((string) ($decoded['eventLevel'] ?? 'info'));
         if ($siteId <= 0 || $runId <= 0) {
             $this->respondJson(422, ['ok' => false, 'error' => 'missing_ids']);
         }
@@ -290,7 +292,13 @@ final class AdminController
             $this->respondJson(202, ['ok' => true, 'ignored' => 'run_not_running']);
         }
 
-        $this->siteRepository->updateProgress($siteId, $pagesVisited, $currentUrl);
+        $this->siteRepository->updateProgress(
+            $siteId,
+            $pagesVisited,
+            $currentUrl,
+            $eventMessage !== '' ? $eventMessage : null,
+            $eventLevel
+        );
         $this->respondJson(200, ['ok' => true]);
     }
 
@@ -303,6 +311,7 @@ final class AdminController
 
         $recentPages = $this->pageRepository->recentBySite($siteId, 25);
         $liveRecentUrls = $this->siteRepository->recentProgressUrls($siteId, 25);
+        $liveLogs = $this->siteRepository->progressLogs($siteId, 250);
         $this->respondJson(200, [
             'ok' => true,
             'site' => [
@@ -314,6 +323,7 @@ final class AdminController
                 'last_error' => (string) ($site['last_error'] ?? ''),
                 'last_crawled_at' => (string) ($site['last_crawled_at'] ?? ''),
             ],
+            'live_logs' => $liveLogs,
             'recent_pages' => array_map(
                 static function (array $page): array {
                     $matchedEntities = [];

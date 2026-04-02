@@ -47,6 +47,35 @@ $buildReportUrl = static function (int $targetSiteId, int $targetPagesPage, int 
 
     return "/sites/{$targetSiteId}{$queryString}";
 };
+$initialLiveLogs = [];
+if (!empty($site['progress_log']) && is_string($site['progress_log'])) {
+    try {
+        /** @var mixed $decodedLogs */
+        $decodedLogs = json_decode((string) $site['progress_log'], true, 512, JSON_THROW_ON_ERROR);
+    } catch (\Throwable) {
+        $decodedLogs = [];
+    }
+    if (is_array($decodedLogs)) {
+        foreach ($decodedLogs as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $message = trim((string) ($item['message'] ?? ''));
+            if ($message === '') {
+                continue;
+            }
+            $level = trim(mb_strtolower((string) ($item['level'] ?? 'info')));
+            if (!in_array($level, ['info', 'warn', 'error', 'debug'], true)) {
+                $level = 'info';
+            }
+            $initialLiveLogs[] = [
+                'at' => trim((string) ($item['at'] ?? '')),
+                'level' => $level,
+                'message' => $message,
+            ];
+        }
+    }
+}
 ?>
 <div class="grid">
     <section class="card full">
@@ -75,6 +104,26 @@ $buildReportUrl = static function (int $targetSiteId, int $targetPagesPage, int 
             'showEdit' => false,
         ]) ?>
         <p class="autorefresh-note">Данные статуса и последних страниц обновляются точечно через API, без перезагрузки страницы.</p>
+    </section>
+
+    <section class="card full">
+        <h2>Живой лог обхода</h2>
+        <div id="live-log-console" class="log-console mono" role="log" aria-live="polite" aria-relevant="additions text">
+            <div id="live-log-body">
+                <?php if ($initialLiveLogs === []): ?>
+                    <div class="log-line"><span class="log-line-msg muted">Логи текущего запуска появятся здесь.</span></div>
+                <?php else: ?>
+                    <?php foreach ($initialLiveLogs as $log): ?>
+                        <div class="log-line log-level-<?= htmlspecialchars((string) $log['level'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>">
+                            <span class="log-line-time"><?= htmlspecialchars((string) ($log['at'] ?: '-'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></span>
+                            <span class="log-line-level">[<?= htmlspecialchars((string) mb_strtoupper((string) $log['level']), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>]</span>
+                            <span class="log-line-msg"><?= htmlspecialchars((string) $log['message'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></span>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </div>
+        </div>
+        <p class="autorefresh-note">Лог обновляется в реальном времени и показывает текущие этапы работы робота.</p>
     </section>
 
     <section class="card third">
@@ -297,6 +346,8 @@ $buildReportUrl = static function (int $targetSiteId, int $targetPagesPage, int 
     const statusNode = document.getElementById('live-status-badge');
     const progressNode = document.getElementById('live-progress-box');
     const recentPagesBody = document.getElementById('live-recent-pages-body');
+    const logConsole = document.getElementById('live-log-console');
+    const logBody = document.getElementById('live-log-body');
     if (!statusNode || !progressNode || !recentPagesBody) {
         return;
     }
@@ -393,10 +444,43 @@ $buildReportUrl = static function (int $targetSiteId, int $targetPagesPage, int 
 
     const renderEmptyRows = () => '<tr><td colspan="6" class="muted">Страницы пока не проиндексированы.</td></tr>';
 
+    const isNearBottom = (element) => {
+        if (!element) {
+            return false;
+        }
+        return element.scrollHeight - element.scrollTop - element.clientHeight < 20;
+    };
+
+    const renderLiveLogs = (logs) => {
+        if (!Array.isArray(logs) || logs.length === 0) {
+            return '<div class="log-line"><span class="log-line-msg muted">Логи текущего запуска появятся здесь.</span></div>';
+        }
+        return logs.map((entry) => {
+            const at = String(entry?.at || '-');
+            const levelRaw = String(entry?.level || 'info').toLowerCase();
+            const level = ['info', 'warn', 'error', 'debug'].includes(levelRaw) ? levelRaw : 'info';
+            const message = String(entry?.message || '');
+            return [
+                `<div class="log-line log-level-${escapeHtml(level)}">`,
+                `<span class="log-line-time">${escapeHtml(at)}</span>`,
+                `<span class="log-line-level">[${escapeHtml(level.toUpperCase())}]</span>`,
+                `<span class="log-line-msg">${escapeHtml(message)}</span>`,
+                '</div>'
+            ].join('');
+        }).join('');
+    };
+
     const applyLiveState = (payload) => {
         const site = payload.site || {};
         statusNode.innerHTML = renderStatus(String(site.status || 'idle'));
         progressNode.innerHTML = renderProgress(site);
+        if (logBody) {
+            const stickToBottom = isNearBottom(logConsole);
+            logBody.innerHTML = renderLiveLogs(payload.live_logs);
+            if (logConsole && stickToBottom) {
+                logConsole.scrollTop = logConsole.scrollHeight;
+            }
+        }
 
         if (currentPagesPage !== 1) {
             return;

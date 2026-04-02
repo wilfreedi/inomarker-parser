@@ -209,6 +209,7 @@ final class SiteRepositoryTest extends DatabaseTestCase
         self::assertSame(0, (int) ($site['progress_pages'] ?? -1));
         self::assertNull($site['progress_current_url']);
         self::assertNull($site['progress_recent_urls']);
+        self::assertNull($site['progress_log']);
         self::assertNull($site['progress_updated_at']);
 
         $runsCount = (int) $this->pdo->query("SELECT COUNT(*) FROM crawl_runs WHERE site_id = {$siteId}")->fetchColumn();
@@ -238,6 +239,7 @@ final class SiteRepositoryTest extends DatabaseTestCase
         $recent = json_decode((string) $running['progress_recent_urls'], true, 512, JSON_THROW_ON_ERROR);
         self::assertSame(['https://example.org/news/page', 'https://example.org/news/page-2'], $recent);
         self::assertNotNull($running['progress_updated_at']);
+        self::assertNull($running['progress_log']);
 
         $this->repository->markCompleted($siteId);
         $completed = $this->repository->findById($siteId);
@@ -264,7 +266,28 @@ final class SiteRepositoryTest extends DatabaseTestCase
         self::assertSame(0, (int) $site['progress_pages']);
         self::assertNull($site['progress_current_url']);
         self::assertNull($site['progress_recent_urls']);
+        self::assertNull($site['progress_log']);
         self::assertNull($site['progress_updated_at']);
         self::assertStringContainsString('stale run recovered', (string) $site['last_error']);
+    }
+
+    public function testUpdateProgressStoresAndDeduplicatesLiveLogs(): void
+    {
+        $this->repository->create('Site A', 'https://example.org');
+        $siteId = (int) $this->repository->all()[0]['id'];
+        $this->repository->requestScan($siteId);
+        $this->repository->claimForScan(1, 360);
+
+        $this->repository->updateProgress($siteId, 1, 'https://example.org/a', 'Запуск обхода', 'info');
+        $this->repository->updateProgress($siteId, 2, 'https://example.org/b', 'Запуск обхода', 'info');
+        $this->repository->updateProgress($siteId, 3, 'https://example.org/c', 'Обнаружен robots.txt', 'debug');
+        $this->repository->updateProgress($siteId, 4, 'https://example.org/d', 'Ошибка страницы', 'warn');
+
+        $logs = $this->repository->progressLogs($siteId, 50);
+        self::assertCount(3, $logs);
+        self::assertSame('info', $logs[0]['level']);
+        self::assertSame('Запуск обхода', $logs[0]['message']);
+        self::assertSame('debug', $logs[1]['level']);
+        self::assertSame('warn', $logs[2]['level']);
     }
 }
