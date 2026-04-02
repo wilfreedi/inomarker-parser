@@ -17,6 +17,11 @@ const BLOCKED_FILE_EXTENSIONS = new Set([
   "woff", "woff2", "ttf", "otf", "eot",
   "xml", "json", "rss", "atom"
 ]);
+const TRACKING_QUERY_PARAMS = new Set([
+  "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "utm_referrer",
+  "gclid", "fbclid", "yclid", "ysclid", "ya_src", "ref", "from", "openstat",
+  "amp", "amp_gsa", "mibextid", "__cf_chl_rt_tk", "lang", "clid"
+]);
 const XML_ENTITIES = {
   "&amp;": "&",
   "&lt;": "<",
@@ -68,9 +73,18 @@ function detectPlatform(userAgent) {
 function normalizeUrl(url) {
   const parsed = new URL(url);
   parsed.hash = "";
+  const keys = Array.from(parsed.searchParams.keys());
+  for (const key of keys) {
+    const normalizedKey = String(key || "").toLowerCase();
+    if (TRACKING_QUERY_PARAMS.has(normalizedKey)) {
+      parsed.searchParams.delete(key);
+    }
+  }
   if (parsed.pathname !== "/") {
     parsed.pathname = parsed.pathname.replace(/\/+$/, "");
   }
+  const search = parsed.searchParams.toString();
+  parsed.search = search === "" ? "" : `?${search}`;
   return parsed.toString();
 }
 
@@ -681,6 +695,49 @@ async function discoverDynamicLinks(page, options) {
   }
 }
 
+async function ensureBottomScroll(page, options) {
+  const deadlineAt = Number(options.deadlineAt || Date.now());
+  const abortSignal = options.abortSignal || null;
+  const pauseMs = Math.max(120, Number(options.pauseMs || 450));
+  const currentUrl = String(options.currentUrl || "");
+  const pagesVisited = Math.max(0, Number(options.pagesVisited || 0));
+  const onEvent = typeof options.onEvent === "function" ? options.onEvent : null;
+
+  if ((abortSignal && abortSignal.aborted) || remainingMs(deadlineAt) <= 250) {
+    return;
+  }
+
+  try {
+    await page.evaluate(() => {
+      const target = Math.max(
+        document.body ? document.body.scrollHeight : 0,
+        document.documentElement ? document.documentElement.scrollHeight : 0
+      );
+      window.scrollTo({ top: target, behavior: "auto" });
+    });
+    if (onEvent) {
+      await onEvent({
+        pagesVisited,
+        currentUrl,
+        event: "Базовый скролл до низа выполнен",
+        eventLevel: "debug"
+      });
+    }
+  } catch (_) {
+    if (onEvent) {
+      await onEvent({
+        pagesVisited,
+        currentUrl,
+        event: "Базовый скролл до низа завершился ошибкой",
+        eventLevel: "warn"
+      });
+    }
+    return;
+  }
+
+  await sleepUntilDeadline(pauseMs, deadlineAt, abortSignal);
+}
+
 function createSessionProfile() {
   const userAgent = pickUserAgent();
   return {
@@ -1245,12 +1302,13 @@ async function crawlSite(options) {
   const humanActionsMax = Math.max(humanActionsMin, Number(process.env.CRAWLER_HUMAN_ACTIONS_MAX || 6));
   const humanDwellMinMs = Math.max(500, Number(process.env.CRAWLER_HUMAN_DWELL_MIN_MS || 2000));
   const humanDwellMaxMs = Math.max(humanDwellMinMs, Number(process.env.CRAWLER_HUMAN_DWELL_MAX_MS || 10000));
+  const humanBehaviorEnabled = String(process.env.CRAWLER_HUMAN_BEHAVIOR_ENABLED || "0") === "1";
   const dynamicScrollEnabled = String(process.env.CRAWLER_DYNAMIC_SCROLL_ENABLED || "1") !== "0";
   const dynamicScrollMaxSteps = Math.max(0, Number(process.env.CRAWLER_DYNAMIC_SCROLL_MAX_STEPS || 8));
   const dynamicScrollStableSteps = Math.max(1, Number(process.env.CRAWLER_DYNAMIC_SCROLL_STABLE_STEPS || 2));
   const dynamicScrollPauseMinMs = Math.max(100, Number(process.env.CRAWLER_DYNAMIC_SCROLL_PAUSE_MIN_MS || 500));
   const dynamicScrollPauseMaxMs = Math.max(dynamicScrollPauseMinMs, Number(process.env.CRAWLER_DYNAMIC_SCROLL_PAUSE_MAX_MS || 1200));
-  const sitemapEnabled = String(process.env.CRAWLER_SITEMAP_ENABLED || "1") !== "0";
+  const sitemapEnabled = false;
   const sitemapMaxFilesDefault = Math.max(250, Math.min(2000, Math.ceil(maxPages / 30)));
   const sitemapMaxFiles = Math.max(1, Number(process.env.CRAWLER_SITEMAP_MAX_FILES || sitemapMaxFilesDefault));
   const sitemapMaxDepth = Math.max(1, Number(process.env.CRAWLER_SITEMAP_MAX_DEPTH || 6));
@@ -1376,7 +1434,7 @@ async function crawlSite(options) {
     await reportProgress(progressCallback, {
       pagesVisited: 0,
       currentUrl: startUrl,
-      event: `Конфиг обхода: maxPages=${maxPages}, maxDepth=${maxDepth}, pagePauseMs=${pagePauseMs}, timeoutMs=${timeoutMs}, pageMaxMs=${pageMaxMs}, maxDurationMs=${maxDurationMs}, sitemapDiscoveryMaxMs=${sitemapDiscoveryMaxMs}, sitemapMaxFiles=${sitemapMaxFiles}, sitemapMaxUrls=${sitemapMaxUrls}`,
+      event: `Конфиг обхода: maxPages=${maxPages}, maxDepth=${maxDepth}, pagePauseMs=${pagePauseMs}, timeoutMs=${timeoutMs}, pageMaxMs=${pageMaxMs}, maxDurationMs=${maxDurationMs}, sitemapEnabled=${sitemapEnabled ? "1" : "0"}, dynamicScroll=${dynamicScrollEnabled ? "1" : "0"}, humanBehavior=${humanBehaviorEnabled ? "1" : "0"}, sitemapDiscoveryMaxMs=${sitemapDiscoveryMaxMs}, sitemapMaxFiles=${sitemapMaxFiles}, sitemapMaxUrls=${sitemapMaxUrls}`,
       eventLevel: "debug"
     });
 
@@ -1529,7 +1587,7 @@ async function crawlSite(options) {
           eventLevel: status !== null && status >= 400 ? "warn" : "debug"
         });
 
-        const allowHumanBehavior = current.source !== "sitemap" || humanOnSitemap;
+        const allowHumanBehavior = humanBehaviorEnabled && (current.source !== "sitemap" || humanOnSitemap);
         const throughputMode = queue.length >= throughputQueueThreshold && current.source !== "sitemap";
         const remainingBeforeHumanMs = remainingMs(pageDeadlineAt);
         if (allowHumanBehavior && !throughputMode && remainingBeforeHumanMs > extractionReserveMs + 1200) {
@@ -1568,6 +1626,13 @@ async function crawlSite(options) {
             event: "Эмуляция пользователя пропущена: нужно сохранить бюджет на извлечение контента",
             eventLevel: "warn"
           });
+        } else if (!humanBehaviorEnabled) {
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: "Эмуляция пользователя отключена конфигурацией",
+            eventLevel: "debug"
+          });
         } else {
           await reportProgress(progressCallback, {
             pagesVisited: pages.length,
@@ -1576,6 +1641,18 @@ async function crawlSite(options) {
             eventLevel: "debug"
           });
         }
+
+        await ensureBottomScroll(page, {
+          deadlineAt: pageDeadlineAt,
+          abortSignal,
+          pauseMs: 450,
+          currentUrl: current.url,
+          pagesVisited: pages.length,
+          onEvent: async (eventPayload) => {
+            await reportProgress(progressCallback, eventPayload);
+          }
+        });
+
         const allowDynamicScroll = dynamicScrollEnabled && (current.source !== "sitemap" || dynamicOnSitemap);
         const remainingBeforeDynamicMs = remainingMs(pageDeadlineAt);
         if (allowDynamicScroll && !throughputMode && remainingBeforeDynamicMs > extractionReserveMs + 1200) {
