@@ -9,7 +9,7 @@ use PDO;
 final class SiteRepository
 {
     private const PROGRESS_RECENT_URLS_LIMIT = 25;
-    private const PROGRESS_LOG_LIMIT = 250;
+    private const PROGRESS_LOG_LIMIT = 2000;
 
     public function __construct(private readonly PDO $pdo)
     {
@@ -639,7 +639,7 @@ final class SiteRepository
         return [
             'at' => $this->now(),
             'level' => $normalizedLevel,
-            'message' => mb_substr($cleanMessage, 0, 500),
+            'message' => mb_substr($cleanMessage, 0, 1000),
         ];
     }
 
@@ -672,7 +672,7 @@ final class SiteRepository
             $logs[] = [
                 'at' => mb_substr($at, 0, 32),
                 'level' => $this->normalizeLogLevel((string) ($item['level'] ?? 'info')),
-                'message' => mb_substr($message, 0, 500),
+                'message' => mb_substr($message, 0, 1000),
             ];
         }
 

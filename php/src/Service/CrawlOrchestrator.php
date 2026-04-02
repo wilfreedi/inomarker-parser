@@ -54,17 +54,38 @@ final class CrawlOrchestrator
 
             foreach ($pages as $page) {
                 $pagesTotal++;
+                $url = trim((string) ($page['url'] ?? ''));
+                $status = isset($page['status']) ? (string) $page['status'] : 'n/a';
+                $this->siteRepository->appendProgressLog(
+                    $siteId,
+                    sprintf('Анализ страницы #%d: %s (status=%s)', $pagesTotal, $url !== '' ? $url : '[empty_url]', $status),
+                    'debug'
+                );
                 if (!$this->isValidCrawledPage($page)) {
+                    $this->siteRepository->appendProgressLog(
+                        $siteId,
+                        sprintf('Страница пропущена как невалидная: #%d', $pagesTotal),
+                        'warn'
+                    );
                     continue;
                 }
-                $url = (string) $page['url'];
                 $existing = $this->pageRepository->findBySiteAndUrl($siteId, $url);
                 if ($existing !== null && (int) ($existing['is_matched'] ?? 0) === 1) {
                     $skippedMatchedPages++;
+                    $this->siteRepository->appendProgressLog(
+                        $siteId,
+                        sprintf('Страница уже помечена как matched, пропуск: %s', $url),
+                        'debug'
+                    );
                     continue;
                 }
                 $validPagesTotal++;
                 $pageId = $this->pageRepository->upsert($siteId, $page);
+                $this->siteRepository->appendProgressLog(
+                    $siteId,
+                    sprintf('Страница сохранена: id=%d url=%s', $pageId, $url),
+                    'debug'
+                );
                 $matches = $matcher->match((string) ($page['text'] ?? ''));
                 if ($matches !== []) {
                     $pagesWithMatches++;
@@ -75,6 +96,16 @@ final class CrawlOrchestrator
                             static fn (array $match): string => (string) ($match['entity_name'] ?? ''),
                             $matches
                         ))
+                    );
+                    $this->siteRepository->appendProgressLog(
+                        $siteId,
+                        sprintf('Совпадения найдены: url=%s, count=%d', $url, count($matches))
+                    );
+                } else {
+                    $this->siteRepository->appendProgressLog(
+                        $siteId,
+                        sprintf('Совпадений не найдено: %s', $url),
+                        'debug'
                     );
                 }
             }

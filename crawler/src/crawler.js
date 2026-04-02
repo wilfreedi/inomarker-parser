@@ -33,6 +33,14 @@ function pickUserAgent() {
   return USER_AGENTS[randomInt(0, USER_AGENTS.length - 1)];
 }
 
+function errorToMessage(error) {
+  if (error instanceof Error) {
+    return error.message || error.name || "unknown_error";
+  }
+
+  return String(error || "unknown_error");
+}
+
 function detectPlatform(userAgent) {
   if (userAgent.includes("Macintosh")) {
     return "MacIntel";
@@ -208,14 +216,42 @@ async function emulateHumanBehavior(page, options) {
   const maxActions = Math.max(minActions, Number(options.maxActions || 6));
   const dwellMinMs = Math.max(500, Number(options.dwellMinMs || 2000));
   const dwellMaxMs = Math.max(dwellMinMs, Number(options.dwellMaxMs || 10000));
+  const currentUrl = String(options.currentUrl || "");
+  const pagesVisited = Math.max(0, Number(options.pagesVisited || 0));
+  const onEvent = typeof options.onEvent === "function" ? options.onEvent : null;
   const actionsCount = randomInt(minActions, maxActions);
+
+  if (onEvent) {
+    await onEvent({
+      pagesVisited,
+      currentUrl,
+      event: `Эмуляция пользователя: запланировано действий ${actionsCount}`,
+      eventLevel: "debug"
+    });
+  }
 
   for (let step = 0; step < actionsCount; step++) {
     if ((abortSignal && abortSignal.aborted) || remainingMs(deadlineAt) <= 200) {
+      if (onEvent) {
+        await onEvent({
+          pagesVisited,
+          currentUrl,
+          event: "Эмуляция пользователя остановлена: abort/deadline",
+          eventLevel: "warn"
+        });
+      }
       return;
     }
 
     const doClick = Math.random() < 0.35;
+    if (onEvent) {
+      await onEvent({
+        pagesVisited,
+        currentUrl,
+        event: `Эмуляция пользователя: шаг ${step + 1}/${actionsCount}, действие=${doClick ? "click" : "scroll"}`,
+        eventLevel: "debug"
+      });
+    }
     if (doClick) {
       try {
         const viewport = page.viewport() || { width: 1200, height: 800 };
@@ -226,7 +262,14 @@ async function emulateHumanBehavior(page, options) {
         await page.mouse.move(x, y, { steps: randomInt(4, 10) });
         await page.mouse.click(x, y, { delay: randomInt(40, 180) });
       } catch (_) {
-        // Ignore interaction errors and continue.
+        if (onEvent) {
+          await onEvent({
+            pagesVisited,
+            currentUrl,
+            event: `Эмуляция пользователя: ошибка click на шаге ${step + 1}`,
+            eventLevel: "warn"
+          });
+        }
       }
     } else {
       try {
@@ -243,18 +286,49 @@ async function emulateHumanBehavior(page, options) {
           window.scrollTo({ top: y, behavior: "smooth" });
         }, targetY);
       } catch (_) {
-        // Ignore interaction errors and continue.
+        if (onEvent) {
+          await onEvent({
+            pagesVisited,
+            currentUrl,
+            event: `Эмуляция пользователя: ошибка scroll на шаге ${step + 1}`,
+            eventLevel: "warn"
+          });
+        }
       }
     }
 
     const betweenActionPauseMs = randomInt(250, 1200);
+    if (onEvent) {
+      await onEvent({
+        pagesVisited,
+        currentUrl,
+        event: `Эмуляция пользователя: пауза ${betweenActionPauseMs}мс`,
+        eventLevel: "debug"
+      });
+    }
     const canContinue = await sleepUntilDeadline(betweenActionPauseMs, deadlineAt, abortSignal);
     if (!canContinue) {
+      if (onEvent) {
+        await onEvent({
+          pagesVisited,
+          currentUrl,
+          event: "Эмуляция пользователя завершена досрочно: deadline",
+          eventLevel: "warn"
+        });
+      }
       return;
     }
   }
 
   const dwellMs = randomInt(dwellMinMs, dwellMaxMs);
+  if (onEvent) {
+    await onEvent({
+      pagesVisited,
+      currentUrl,
+      event: `Эмуляция пользователя: финальная задержка ${dwellMs}мс`,
+      eventLevel: "debug"
+    });
+  }
   await sleepUntilDeadline(dwellMs, deadlineAt, abortSignal);
 }
 
@@ -265,14 +339,34 @@ async function discoverDynamicLinks(page, options) {
   const stableStepsToStop = Math.max(1, Number(options.stableStepsToStop || 2));
   const pauseMinMs = Math.max(100, Number(options.pauseMinMs || 500));
   const pauseMaxMs = Math.max(pauseMinMs, Number(options.pauseMaxMs || 1200));
+  const currentUrl = String(options.currentUrl || "");
+  const pagesVisited = Math.max(0, Number(options.pagesVisited || 0));
+  const onEvent = typeof options.onEvent === "function" ? options.onEvent : null;
 
   if (maxSteps <= 0) {
     return;
   }
 
+  if (onEvent) {
+    await onEvent({
+      pagesVisited,
+      currentUrl,
+      event: `Динамический добор ссылок: шагов до ${maxSteps}, stopAfterStable=${stableStepsToStop}`,
+      eventLevel: "debug"
+    });
+  }
+
   let stableSteps = 0;
   for (let step = 0; step < maxSteps; step++) {
     if ((abortSignal && abortSignal.aborted) || remainingMs(deadlineAt) <= 1200) {
+      if (onEvent) {
+        await onEvent({
+          pagesVisited,
+          currentUrl,
+          event: "Динамический добор ссылок остановлен: abort/deadline",
+          eventLevel: "warn"
+        });
+      }
       return;
     }
 
@@ -284,7 +378,24 @@ async function discoverDynamicLinks(page, options) {
       )
     })).catch(() => null);
     if (!before) {
+      if (onEvent) {
+        await onEvent({
+          pagesVisited,
+          currentUrl,
+          event: `Динамический добор ссылок: не удалось прочитать метрики (до скролла), шаг ${step + 1}`,
+          eventLevel: "warn"
+        });
+      }
       return;
+    }
+
+    if (onEvent) {
+      await onEvent({
+        pagesVisited,
+        currentUrl,
+        event: `Динамический добор ссылок: шаг ${step + 1}, linksBefore=${before.linksCount}`,
+        eventLevel: "debug"
+      });
     }
 
     await page.evaluate(() => {
@@ -298,6 +409,14 @@ async function discoverDynamicLinks(page, options) {
     const pauseMs = randomInt(pauseMinMs, pauseMaxMs);
     const canContinue = await sleepUntilDeadline(pauseMs, deadlineAt, abortSignal);
     if (!canContinue) {
+      if (onEvent) {
+        await onEvent({
+          pagesVisited,
+          currentUrl,
+          event: "Динамический добор ссылок остановлен на паузе: deadline",
+          eventLevel: "warn"
+        });
+      }
       return;
     }
 
@@ -309,19 +428,52 @@ async function discoverDynamicLinks(page, options) {
       )
     })).catch(() => null);
     if (!after) {
+      if (onEvent) {
+        await onEvent({
+          pagesVisited,
+          currentUrl,
+          event: `Динамический добор ссылок: не удалось прочитать метрики (после скролла), шаг ${step + 1}`,
+          eventLevel: "warn"
+        });
+      }
       return;
     }
 
     const hasGrowth = after.linksCount > before.linksCount || after.scrollHeight > before.scrollHeight;
+    if (onEvent) {
+      await onEvent({
+        pagesVisited,
+        currentUrl,
+        event: `Динамический добор ссылок: шаг ${step + 1}, linksAfter=${after.linksCount}, growth=${hasGrowth ? "yes" : "no"}`,
+        eventLevel: "debug"
+      });
+    }
     if (!hasGrowth) {
       stableSteps++;
       if (stableSteps >= stableStepsToStop) {
+        if (onEvent) {
+          await onEvent({
+            pagesVisited,
+            currentUrl,
+            event: `Динамический добор ссылок завершен: стабилизация (${stableStepsToStop} шага без роста)`,
+            eventLevel: "info"
+          });
+        }
         return;
       }
       continue;
     }
 
     stableSteps = 0;
+  }
+
+  if (onEvent) {
+    await onEvent({
+      pagesVisited,
+      currentUrl,
+      event: `Динамический добор ссылок завершен: достигнут лимит шагов ${maxSteps}`,
+      eventLevel: "debug"
+    });
   }
 }
 
@@ -518,27 +670,38 @@ async function discoverUrlsFromSitemaps(options) {
 
     const xmlBody = await fetchTextWithTimeout(current.url, requestTimeoutMs);
     fetchedSitemapFiles++;
-    if (fetchedSitemapFiles <= 3 || fetchedSitemapFiles % 10 === 0) {
+    await reportProgress(progressCallback, {
+      pagesVisited,
+      currentUrl: current.url,
+      event: `Обработка sitemap #${fetchedSitemapFiles}: ${current.url}`,
+      eventLevel: "debug"
+    });
+    if (xmlBody === "") {
       await reportProgress(progressCallback, {
         pagesVisited,
         currentUrl: current.url,
-        event: `Обработка sitemap #${fetchedSitemapFiles}`,
-        eventLevel: "debug"
+        event: `Пустой ответ sitemap: ${current.url}`,
+        eventLevel: "warn"
       });
-    }
-    if (xmlBody === "") {
       continue;
     }
 
     const nestedSitemaps = extractLocEntries(xmlBody, "sitemap");
     const pageLocs = extractLocEntries(xmlBody, "url");
     const fallbackLocs = nestedSitemaps.length === 0 && pageLocs.length === 0 ? extractGenericLocs(xmlBody) : [];
+    await reportProgress(progressCallback, {
+      pagesVisited,
+      currentUrl: current.url,
+      event: `Sitemap разобран: nested=${nestedSitemaps.length}, urls=${pageLocs.length}, fallback=${fallbackLocs.length}`,
+      eventLevel: "debug"
+    });
 
     for (const nestedSitemapUrl of nestedSitemaps) {
       enqueueSitemap(nestedSitemapUrl, current.depth + 1);
     }
 
     const candidatePageLocs = pageLocs.length > 0 ? pageLocs : fallbackLocs;
+    let addedFromCurrentSitemap = 0;
     for (const pageUrlRaw of candidatePageLocs) {
       if (discovered.length >= maxDiscoveredUrls) {
         break;
@@ -558,6 +721,15 @@ async function discoverUrlsFromSitemaps(options) {
       }
       discoveredSet.add(normalizedPageUrl);
       discovered.push(normalizedPageUrl);
+      addedFromCurrentSitemap++;
+    }
+    if (addedFromCurrentSitemap > 0) {
+      await reportProgress(progressCallback, {
+        pagesVisited,
+        currentUrl: current.url,
+        event: `Из sitemap добавлено URL: ${addedFromCurrentSitemap} (всего ${discovered.length})`,
+        eventLevel: "debug"
+      });
     }
 
     if (nestedSitemaps.length === 0 && pageLocs.length === 0 && fallbackLocs.length > 0) {
@@ -618,8 +790,9 @@ async function reportProgress(progressCallback, progressPayload) {
       }),
       signal: controller.signal
     });
-  } catch (_) {
+  } catch (error) {
     // Progress callback failures should not break crawling.
+    console.error("[crawler] progress callback failed:", errorToMessage(error));
   } finally {
     clearTimeout(timer);
   }
@@ -737,6 +910,12 @@ async function crawlSite(options) {
       event: "Запуск crawler: старт обхода сайта",
       eventLevel: "info"
     });
+    await reportProgress(progressCallback, {
+      pagesVisited: 0,
+      currentUrl: startUrl,
+      event: `Конфиг обхода: maxPages=${maxPages}, maxDepth=${maxDepth}, pagePauseMs=${pagePauseMs}, timeoutMs=${timeoutMs}, pageMaxMs=${pageMaxMs}, maxDurationMs=${maxDurationMs}`,
+      eventLevel: "debug"
+    });
 
     if (sitemapEnabled && remainingMs(deadlineAt) > 2000) {
       const sitemapUrls = await discoverUrlsFromSitemaps({
@@ -766,6 +945,20 @@ async function crawlSite(options) {
         event: `Очередь пополнена из sitemap: ${sitemapUrls.length} URL`,
         eventLevel: "info"
       });
+    } else if (!sitemapEnabled) {
+      await reportProgress(progressCallback, {
+        pagesVisited: 0,
+        currentUrl: "",
+        event: "Поиск sitemap отключен конфигурацией",
+        eventLevel: "warn"
+      });
+    } else {
+      await reportProgress(progressCallback, {
+        pagesVisited: 0,
+        currentUrl: "",
+        event: "Поиск sitemap пропущен: мало времени до дедлайна",
+        eventLevel: "warn"
+      });
     }
 
     let shouldPauseBeforeNextRequest = false;
@@ -782,15 +975,34 @@ async function crawlSite(options) {
       if (!current || visited.has(current.url)) {
         continue;
       }
+      const sourceLabel = current.source === "sitemap" ? "sitemap" : "links";
+      await reportProgress(progressCallback, {
+        pagesVisited: pages.length,
+        currentUrl: current.url,
+        event: `Начата страница ${pages.length + 1}: source=${sourceLabel}, depth=${current.depth}, queueRemaining=${queue.length}`,
+        eventLevel: "debug"
+      });
       if (shouldPauseBeforeNextRequest) {
         const pauseMs = current.source === "sitemap" ? sitemapPagePauseMs : pagePauseMs;
         if (pauseMs > 0) {
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: `Пауза перед следующей страницей: ${pauseMs}мс`,
+            eventLevel: "debug"
+          });
           await sleep(pauseMs);
         }
       }
       queued.delete(current.url);
       visited.add(current.url);
 
+      await reportProgress(progressCallback, {
+        pagesVisited: pages.length,
+        currentUrl: current.url,
+        event: "Ожидание pacing/backoff перед запросом",
+        eventLevel: "debug"
+      });
       await pacer.waitBeforeRequest();
       if (abortSignal && abortSignal.aborted) {
         stopReason = "request_aborted";
@@ -804,52 +1016,117 @@ async function crawlSite(options) {
       const pageDeadlineAt = Math.min(deadlineAt, Date.now() + pageMaxMs);
 
       try {
-        const shouldEmitPageStartLog = pages.length < 10 || (pages.length + 1) % 25 === 0;
-        if (shouldEmitPageStartLog) {
-          const sourceLabel = current.source === "sitemap" ? "sitemap" : "links";
-          await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
-            currentUrl: current.url,
-            event: `Проверка страницы (${sourceLabel}): ${current.url}`,
-            eventLevel: "debug"
-          });
-        }
+        await reportProgress(progressCallback, {
+          pagesVisited: pages.length,
+          currentUrl: current.url,
+          event: `Проверка страницы (${sourceLabel}): ${current.url}`,
+          eventLevel: "info"
+        });
         const remainingBeforeNavMs = deadlineAt - Date.now();
         const remainingForPageMs = pageDeadlineAt - Date.now();
         if (remainingBeforeNavMs <= 1500 || remainingForPageMs <= 1000) {
           stopReason = "max_duration_reached";
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: "Остановлено до навигации: достигнут дедлайн запуска",
+            eventLevel: "warn"
+          });
           break;
         }
         const navigationTimeoutMs = Math.max(1000, Math.min(timeoutMs, remainingBeforeNavMs - 500, remainingForPageMs));
+        await reportProgress(progressCallback, {
+          pagesVisited: pages.length,
+          currentUrl: current.url,
+          event: `Навигация page.goto(waitUntil=load, timeout=${navigationTimeoutMs}мс)`,
+          eventLevel: "debug"
+        });
+        const navigationStartedAt = Date.now();
         const response = await page.goto(current.url, { waitUntil: "load", timeout: navigationTimeoutMs });
+        const navigationElapsedMs = Date.now() - navigationStartedAt;
         status = response ? response.status() : null;
         pacer.markResponse(status);
+        await reportProgress(progressCallback, {
+          pagesVisited: pages.length,
+          currentUrl: current.url,
+          event: `Навигация завершена: status=${status ?? "n/a"}, elapsed=${navigationElapsedMs}мс`,
+          eventLevel: status !== null && status >= 400 ? "warn" : "debug"
+        });
 
         const allowHumanBehavior = current.source !== "sitemap" || humanOnSitemap;
         if (allowHumanBehavior) {
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: "Запуск эмуляции пользовательского поведения",
+            eventLevel: "debug"
+          });
           await emulateHumanBehavior(page, {
             deadlineAt: pageDeadlineAt,
             abortSignal,
             minActions: humanActionsMin,
             maxActions: humanActionsMax,
             dwellMinMs: humanDwellMinMs,
-            dwellMaxMs: humanDwellMaxMs
+            dwellMaxMs: humanDwellMaxMs,
+            currentUrl: current.url,
+            pagesVisited: pages.length,
+            onEvent: async (eventPayload) => {
+              await reportProgress(progressCallback, eventPayload);
+            }
+          });
+        } else {
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: "Эмуляция пользователя пропущена для sitemap-страницы",
+            eventLevel: "debug"
           });
         }
         const allowDynamicScroll = dynamicScrollEnabled && (current.source !== "sitemap" || dynamicOnSitemap);
         if (allowDynamicScroll && remainingMs(pageDeadlineAt) > 1200) {
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: "Запуск динамического добора ссылок",
+            eventLevel: "debug"
+          });
           await discoverDynamicLinks(page, {
             deadlineAt: pageDeadlineAt,
             abortSignal,
             maxSteps: dynamicScrollMaxSteps,
             stableStepsToStop: dynamicScrollStableSteps,
             pauseMinMs: dynamicScrollPauseMinMs,
-            pauseMaxMs: dynamicScrollPauseMaxMs
+            pauseMaxMs: dynamicScrollPauseMaxMs,
+            currentUrl: current.url,
+            pagesVisited: pages.length,
+            onEvent: async (eventPayload) => {
+              await reportProgress(progressCallback, eventPayload);
+            }
+          });
+        } else if (!dynamicScrollEnabled) {
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: "Динамический добор ссылок отключен конфигурацией",
+            eventLevel: "debug"
+          });
+        } else {
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: "Динамический добор ссылок пропущен: мало времени до дедлайна страницы",
+            eventLevel: "warn"
           });
         }
 
         if (remainingMs(pageDeadlineAt) <= 0) {
           await page.evaluate(() => window.stop()).catch(() => undefined);
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: "Принудительная остановка страницы: истек лимит времени страницы",
+            eventLevel: "warn"
+          });
           title = "";
           text = "";
           pageLinks = [];
@@ -872,6 +1149,12 @@ async function crawlSite(options) {
           title = payload.title || "";
           text = payload.text || "";
           pageLinks = extractLinks(payload.links || [], current.url, siteHost);
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: `Извлечен контент: titleLen=${title.length}, textLen=${text.length}, linksRaw=${(payload.links || []).length}, linksFiltered=${pageLinks.length}`,
+            eventLevel: "debug"
+          });
         }
       } catch (error) {
         pacer.markResponse(503);
@@ -879,8 +1162,8 @@ async function crawlSite(options) {
         await reportProgress(progressCallback, {
           pagesVisited: pages.length,
           currentUrl: current.url,
-          event: `Ошибка страницы: ${current.url}`,
-          eventLevel: "warn"
+          event: `Ошибка страницы: ${current.url}; detail=${errorToMessage(error)}`,
+          eventLevel: "error"
         });
         title = "";
         text = "";
@@ -895,7 +1178,9 @@ async function crawlSite(options) {
       });
       await reportProgress(progressCallback, {
         pagesVisited: pages.length,
-        currentUrl: current.url
+        currentUrl: current.url,
+        event: `Страница завершена: #${pages.length}, queue=${queue.length}, visited=${visited.size}`,
+        eventLevel: "debug"
       });
       processedSinceRecycle++;
       shouldPauseBeforeNextRequest = true;
@@ -907,23 +1192,49 @@ async function crawlSite(options) {
         && !(abortSignal && abortSignal.aborted)
       ) {
         try {
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: `Запущен recycle page после ${processedSinceRecycle} страниц`,
+            eventLevel: "debug"
+          });
           const previousPage = page;
           page = await createGuardedPage();
           processedSinceRecycle = 0;
           previousPage.off("popup", popupHandler);
           await previousPage.close().catch(() => undefined);
-        } catch (_) {
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: "Recycle page завершен успешно",
+            eventLevel: "info"
+          });
+        } catch (error) {
           processedSinceRecycle = 0;
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: `Ошибка recycle page: ${errorToMessage(error)}`,
+            eventLevel: "warn"
+          });
         }
       }
 
       if (current.depth < maxDepth) {
+        let queuedFromPage = 0;
         for (const link of pageLinks) {
           if (!visited.has(link) && !queued.has(link)) {
             queue.push({ url: link, depth: current.depth + 1, source: "dom" });
             queued.add(link);
+            queuedFromPage++;
           }
         }
+        await reportProgress(progressCallback, {
+          pagesVisited: pages.length,
+          currentUrl: current.url,
+          event: `Добавлено новых ссылок из DOM: ${queuedFromPage}; queueNow=${queue.length}`,
+          eventLevel: "debug"
+        });
       }
     }
 
