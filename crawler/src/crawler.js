@@ -167,6 +167,17 @@ function isLikelySitemapUrl(url, siteHost) {
   return pathname.endsWith(".xml") || pathname.endsWith(".xml.gz") || pathname.includes("sitemap");
 }
 
+function isAssetSitemapUrl(url) {
+  const pathname = String(url.pathname || "").toLowerCase();
+  return pathname.includes("sitemap_image")
+    || pathname.includes("sitemap-images")
+    || pathname.includes("image-sitemap")
+    || pathname.includes("images-sitemap")
+    || pathname.includes("sitemap_video")
+    || pathname.includes("video-sitemap")
+    || pathname.includes("videos-sitemap");
+}
+
 function looksLikeJsChallengeBody(body) {
   const value = String(body || "").toLowerCase();
   if (value === "") {
@@ -405,8 +416,25 @@ async function emulateHumanBehavior(page, options) {
         const height = Math.max(200, Number(viewport.height || 800));
         const x = randomInt(40, width - 40);
         const y = randomInt(80, height - 40);
-        await page.mouse.move(x, y, { steps: randomInt(4, 10) });
-        await page.mouse.click(x, y, { delay: randomInt(40, 180) });
+        await page.evaluate((clickX, clickY) => {
+          const target = document.elementFromPoint(clickX, clickY);
+          if (target && target.closest("a,button,input,textarea,select,[role='button'],[onclick]")) {
+            return false;
+          }
+          const init = {
+            bubbles: true,
+            cancelable: true,
+            clientX: clickX,
+            clientY: clickY,
+            view: window
+          };
+          document.dispatchEvent(new MouseEvent("mousemove", init));
+          document.body.dispatchEvent(new MouseEvent("mousedown", init));
+          document.body.dispatchEvent(new MouseEvent("mouseup", init));
+          document.body.dispatchEvent(new MouseEvent("click", init));
+
+          return true;
+        }, x, y);
       } catch (_) {
         if (onEvent) {
           await onEvent({
@@ -725,6 +753,46 @@ function extractLinks(rawLinks, baseUrl, siteHost) {
   return links;
 }
 
+async function extractPagePayload(page, pageUrl, siteHost, timeoutMs) {
+  const safeTimeoutMs = Math.max(500, Number(timeoutMs || 1500));
+  const evaluatePromise = page.evaluate(() => {
+    const links = Array.from(document.querySelectorAll("a[href]"))
+      .map((node) => node.getAttribute("href"))
+      .filter(Boolean);
+    const pageText = (document.body ? document.body.innerText : "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    return {
+      title: document.title || "",
+      text: pageText,
+      links
+    };
+  });
+  const timeoutPromise = new Promise((resolve) => {
+    setTimeout(() => resolve(null), safeTimeoutMs);
+  });
+  const payload = await Promise.race([
+    evaluatePromise.catch(() => null),
+    timeoutPromise
+  ]);
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const title = String(payload.title || "");
+  const text = String(payload.text || "");
+  const linksRaw = Array.isArray(payload.links) ? payload.links : [];
+  const linksFiltered = extractLinks(linksRaw, pageUrl, siteHost);
+
+  return {
+    title,
+    text,
+    linksRawCount: linksRaw.length,
+    linksFiltered
+  };
+}
+
 async function discoverUrlsFromSitemaps(options) {
   const origin = options.origin;
   const siteHost = options.siteHost;
@@ -746,14 +814,18 @@ async function discoverUrlsFromSitemaps(options) {
   const discovered = [];
   const discoveredSet = new Set();
 
-  const enqueueSitemap = (sitemapUrl, depth) => {
+  const enqueueSitemap = (sitemapUrl, depth, priority = "back") => {
     if (depth > maxSitemapDepth) {
       return;
     }
     let normalizedSitemapUrl = "";
+    let parsed = null;
     try {
-      const parsed = new URL(sitemapUrl, origin);
+      parsed = new URL(sitemapUrl, origin);
       if (!isLikelySitemapUrl(parsed, siteHost)) {
+        return;
+      }
+      if (isAssetSitemapUrl(parsed)) {
         return;
       }
       normalizedSitemapUrl = normalizeUrl(parsed.toString());
@@ -764,7 +836,11 @@ async function discoverUrlsFromSitemaps(options) {
       return;
     }
     seenSitemaps.add(normalizedSitemapUrl);
-    queue.push({ url: normalizedSitemapUrl, depth });
+    if (priority === "front") {
+      queue.unshift({ url: normalizedSitemapUrl, depth });
+    } else {
+      queue.push({ url: normalizedSitemapUrl, depth });
+    }
   };
 
   const robotsUrl = new URL("/robots.txt", origin).toString();
@@ -813,12 +889,14 @@ async function discoverUrlsFromSitemaps(options) {
   }
 
   let fetchedSitemapFiles = 0;
+  let discoveryStopReason = "queue_empty";
   while (
     queue.length > 0
     && fetchedSitemapFiles < maxSitemapFiles
     && discovered.length < maxDiscoveredUrls
   ) {
     if ((abortSignal && abortSignal.aborted) || Date.now() >= discoveryDeadlineAt) {
+      discoveryStopReason = (abortSignal && abortSignal.aborted) ? "aborted" : "deadline_reached";
       break;
     }
 
@@ -827,6 +905,20 @@ async function discoverUrlsFromSitemaps(options) {
       continue;
     }
     if (current.depth > maxSitemapDepth) {
+      continue;
+    }
+    try {
+      const currentParsed = new URL(current.url);
+      if (isAssetSitemapUrl(currentParsed)) {
+        await reportProgress(progressCallback, {
+          pagesVisited,
+          currentUrl: current.url,
+          event: `Sitemap пропущен как asset-only: ${current.url}`,
+          eventLevel: "debug"
+        });
+        continue;
+      }
+    } catch (_) {
       continue;
     }
 
@@ -877,7 +969,7 @@ async function discoverUrlsFromSitemaps(options) {
     });
 
     for (const nestedSitemapUrl of nestedSitemaps) {
-      enqueueSitemap(nestedSitemapUrl, current.depth + 1);
+      enqueueSitemap(nestedSitemapUrl, current.depth + 1, "front");
     }
 
     const candidatePageLocs = pageLocs.length > 0 ? pageLocs : fallbackLocs;
@@ -928,11 +1020,20 @@ async function discoverUrlsFromSitemaps(options) {
       }
     }
   }
+  if (discoveryStopReason === "queue_empty") {
+    if (fetchedSitemapFiles >= maxSitemapFiles) {
+      discoveryStopReason = "max_sitemap_files_reached";
+    } else if (discovered.length >= maxDiscoveredUrls) {
+      discoveryStopReason = "max_discovered_urls_reached";
+    } else if (queue.length > 0) {
+      discoveryStopReason = "stopped_with_queue";
+    }
+  }
 
   await reportProgress(progressCallback, {
     pagesVisited,
     currentUrl: "",
-    event: `Сбор sitemap завершен: файлов ${fetchedSitemapFiles}, URL ${discovered.length}`,
+    event: `Сбор sitemap завершен: файлов ${fetchedSitemapFiles}, URL ${discovered.length}, причина=${discoveryStopReason}`,
     eventLevel: "info"
   });
 
@@ -999,16 +1100,19 @@ async function crawlSite(options) {
   const dynamicScrollPauseMinMs = Math.max(100, Number(process.env.CRAWLER_DYNAMIC_SCROLL_PAUSE_MIN_MS || 500));
   const dynamicScrollPauseMaxMs = Math.max(dynamicScrollPauseMinMs, Number(process.env.CRAWLER_DYNAMIC_SCROLL_PAUSE_MAX_MS || 1200));
   const sitemapEnabled = String(process.env.CRAWLER_SITEMAP_ENABLED || "1") !== "0";
-  const sitemapMaxFiles = Math.max(1, Number(process.env.CRAWLER_SITEMAP_MAX_FILES || 80));
+  const sitemapMaxFiles = Math.max(1, Number(process.env.CRAWLER_SITEMAP_MAX_FILES || 250));
   const sitemapMaxDepth = Math.max(1, Number(process.env.CRAWLER_SITEMAP_MAX_DEPTH || 6));
   const sitemapRequestTimeoutMs = Math.max(1000, Number(process.env.CRAWLER_SITEMAP_REQUEST_TIMEOUT_MS || 8000));
-  const sitemapDiscoveryMaxMs = Math.max(1000, Number(process.env.CRAWLER_SITEMAP_DISCOVERY_MAX_MS || 45000));
+  const sitemapDiscoveryMaxMs = Math.max(1000, Number(process.env.CRAWLER_SITEMAP_DISCOVERY_MAX_MS || 240000));
   const sitemapMaxUrls = Math.max(maxPages, Number(process.env.CRAWLER_SITEMAP_MAX_URLS || 50000));
   const sitemapPagePauseMs = Math.max(0, Number(process.env.CRAWLER_SITEMAP_PAGE_PAUSE_MS || 200));
   const humanOnSitemap = String(process.env.CRAWLER_HUMAN_ON_SITEMAP || "0") === "1";
   const dynamicOnSitemap = String(process.env.CRAWLER_DYNAMIC_ON_SITEMAP || "0") === "1";
   const pageRecycleEvery = Math.max(0, Number(process.env.CRAWLER_PAGE_RECYCLE_EVERY || 50));
   const pagePauseMs = Math.max(0, Number(options.pagePauseMs || 1000));
+  const extractionReserveMs = Math.max(1200, Number(process.env.CRAWLER_EXTRACTION_RESERVE_MS || 3500));
+  const humanBudgetMs = Math.max(1500, Number(process.env.CRAWLER_HUMAN_BUDGET_MS || 12000));
+  const dynamicBudgetMs = Math.max(1200, Number(process.env.CRAWLER_DYNAMIC_BUDGET_MS || 10000));
   const abortSignal = options.abortSignal || null;
   const progressCallback = options.progressCallback || null;
   const pacer = createRequestPacer({
@@ -1253,15 +1357,18 @@ async function crawlSite(options) {
         });
 
         const allowHumanBehavior = current.source !== "sitemap" || humanOnSitemap;
-        if (allowHumanBehavior) {
+        const remainingBeforeHumanMs = remainingMs(pageDeadlineAt);
+        if (allowHumanBehavior && remainingBeforeHumanMs > extractionReserveMs + 1200) {
+          const humanTimeBudgetMs = Math.min(humanBudgetMs, remainingBeforeHumanMs - extractionReserveMs);
+          const humanDeadlineAt = Date.now() + humanTimeBudgetMs;
           await reportProgress(progressCallback, {
             pagesVisited: pages.length,
             currentUrl: current.url,
-            event: "Запуск эмуляции пользовательского поведения",
+            event: `Запуск эмуляции пользовательского поведения (budget=${humanTimeBudgetMs}мс)`,
             eventLevel: "debug"
           });
           await emulateHumanBehavior(page, {
-            deadlineAt: pageDeadlineAt,
+            deadlineAt: Math.min(pageDeadlineAt, humanDeadlineAt),
             abortSignal,
             minActions: humanActionsMin,
             maxActions: humanActionsMax,
@@ -1273,6 +1380,13 @@ async function crawlSite(options) {
               await reportProgress(progressCallback, eventPayload);
             }
           });
+        } else if (allowHumanBehavior) {
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: "Эмуляция пользователя пропущена: нужно сохранить бюджет на извлечение контента",
+            eventLevel: "warn"
+          });
         } else {
           await reportProgress(progressCallback, {
             pagesVisited: pages.length,
@@ -1282,15 +1396,18 @@ async function crawlSite(options) {
           });
         }
         const allowDynamicScroll = dynamicScrollEnabled && (current.source !== "sitemap" || dynamicOnSitemap);
-        if (allowDynamicScroll && remainingMs(pageDeadlineAt) > 1200) {
+        const remainingBeforeDynamicMs = remainingMs(pageDeadlineAt);
+        if (allowDynamicScroll && remainingBeforeDynamicMs > extractionReserveMs + 1200) {
+          const dynamicTimeBudgetMs = Math.min(dynamicBudgetMs, remainingBeforeDynamicMs - extractionReserveMs);
+          const dynamicDeadlineAt = Date.now() + dynamicTimeBudgetMs;
           await reportProgress(progressCallback, {
             pagesVisited: pages.length,
             currentUrl: current.url,
-            event: "Запуск динамического добора ссылок",
+            event: `Запуск динамического добора ссылок (budget=${dynamicTimeBudgetMs}мс)`,
             eventLevel: "debug"
           });
           await discoverDynamicLinks(page, {
-            deadlineAt: pageDeadlineAt,
+            deadlineAt: Math.min(pageDeadlineAt, dynamicDeadlineAt),
             abortSignal,
             maxSteps: dynamicScrollMaxSteps,
             stableStepsToStop: dynamicScrollStableSteps,
@@ -1313,7 +1430,7 @@ async function crawlSite(options) {
           await reportProgress(progressCallback, {
             pagesVisited: pages.length,
             currentUrl: current.url,
-            event: "Динамический добор ссылок пропущен: мало времени до дедлайна страницы",
+            event: "Динамический добор ссылок пропущен: нужно сохранить бюджет на извлечение контента",
             eventLevel: "warn"
           });
         }
@@ -1326,32 +1443,30 @@ async function crawlSite(options) {
             event: "Принудительная остановка страницы: истек лимит времени страницы",
             eventLevel: "warn"
           });
+        }
+        const remainingForExtractMs = remainingMs(pageDeadlineAt);
+        const extractTimeoutMs = remainingForExtractMs > 0
+          ? Math.max(1000, Math.min(6000, remainingForExtractMs))
+          : 1500;
+        const payload = await extractPagePayload(page, current.url, siteHost, extractTimeoutMs);
+        if (payload === null) {
           title = "";
           text = "";
           pageLinks = [];
-        } else {
-          const payload = await page.evaluate(() => {
-            const links = Array.from(document.querySelectorAll("a[href]"))
-              .map((node) => node.getAttribute("href"))
-              .filter(Boolean);
-            const pageText = (document.body ? document.body.innerText : "")
-              .replace(/\s+/g, " ")
-              .trim();
-
-            return {
-              title: document.title || "",
-              text: pageText,
-              links
-            };
-          });
-
-          title = payload.title || "";
-          text = payload.text || "";
-          pageLinks = extractLinks(payload.links || [], current.url, siteHost);
           await reportProgress(progressCallback, {
             pagesVisited: pages.length,
             currentUrl: current.url,
-            event: `Извлечен контент: titleLen=${title.length}, textLen=${text.length}, linksRaw=${(payload.links || []).length}, linksFiltered=${pageLinks.length}`,
+            event: `Извлечение контента не удалось (timeout=${extractTimeoutMs}мс)`,
+            eventLevel: "warn"
+          });
+        } else {
+          title = payload.title;
+          text = payload.text;
+          pageLinks = payload.linksFiltered;
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: `Извлечен контент: titleLen=${title.length}, textLen=${text.length}, linksRaw=${payload.linksRawCount}, linksFiltered=${pageLinks.length}`,
             eventLevel: "debug"
           });
         }
