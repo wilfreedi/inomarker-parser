@@ -24,6 +24,11 @@ const XML_ENTITIES = {
   "&quot;": "\"",
   "&apos;": "'"
 };
+const PROGRESS_DEBUG_MIN_INTERVAL_MS = Math.max(
+  0,
+  Number(process.env.CRAWLER_PROGRESS_DEBUG_MIN_INTERVAL_MS || 1200)
+);
+const progressDebugLastSentByRun = new Map();
 
 function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -1045,6 +1050,23 @@ async function reportProgress(progressCallback, progressPayload) {
     return;
   }
 
+  const eventLevelRaw = String(progressPayload.eventLevel || "info").trim().toLowerCase();
+  const eventLevel = ["info", "warn", "error", "debug"].includes(eventLevelRaw) ? eventLevelRaw : "info";
+  if (eventLevel === "debug" && PROGRESS_DEBUG_MIN_INTERVAL_MS > 0) {
+    const siteId = Number(progressCallback.siteId || 0);
+    const runId = Number(progressCallback.runId || 0);
+    const runKey = siteId > 0 && runId > 0 ? `${siteId}:${runId}` : "global";
+    const now = Date.now();
+    const lastSentAt = Number(progressDebugLastSentByRun.get(runKey) || 0);
+    if (now - lastSentAt < PROGRESS_DEBUG_MIN_INTERVAL_MS) {
+      return;
+    }
+    progressDebugLastSentByRun.set(runKey, now);
+    if (progressDebugLastSentByRun.size > 512) {
+      progressDebugLastSentByRun.clear();
+    }
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1500);
   const headers = {
@@ -1056,8 +1078,6 @@ async function reportProgress(progressCallback, progressPayload) {
 
   try {
     const event = String(progressPayload.event || "").trim();
-    const eventLevelRaw = String(progressPayload.eventLevel || "info").trim().toLowerCase();
-    const eventLevel = ["info", "warn", "error", "debug"].includes(eventLevelRaw) ? eventLevelRaw : "info";
     await fetch(progressCallback.url, {
       method: "POST",
       headers,

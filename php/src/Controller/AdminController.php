@@ -311,7 +311,7 @@ final class AdminController
 
         $recentPages = $this->pageRepository->recentBySite($siteId, 25);
         $liveRecentUrls = $this->siteRepository->recentProgressUrls($siteId, 25);
-        $liveLogs = $this->siteRepository->progressLogs($siteId, 1000);
+        $liveLogs = $this->siteRepository->progressLogs($siteId, 200);
         $this->respondJson(200, [
             'ok' => true,
             'site' => [

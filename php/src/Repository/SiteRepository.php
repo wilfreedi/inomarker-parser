@@ -9,7 +9,7 @@ use PDO;
 final class SiteRepository
 {
     private const PROGRESS_RECENT_URLS_LIMIT = 25;
-    private const PROGRESS_LOG_LIMIT = 2000;
+    private const PROGRESS_LOG_LIMIT = 600;
 
     public function __construct(private readonly PDO $pdo)
     {

@@ -348,6 +348,7 @@ if (!empty($site['progress_log']) && is_string($site['progress_log'])) {
     const recentPagesBody = document.getElementById('live-recent-pages-body');
     const logConsole = document.getElementById('live-log-console');
     const logBody = document.getElementById('live-log-body');
+    let lastLogsFingerprint = '';
     if (!statusNode || !progressNode || !recentPagesBody) {
         return;
     }
@@ -475,10 +476,16 @@ if (!empty($site['progress_log']) && is_string($site['progress_log'])) {
         statusNode.innerHTML = renderStatus(String(site.status || 'idle'));
         progressNode.innerHTML = renderProgress(site);
         if (logBody) {
-            const stickToBottom = isNearBottom(logConsole);
-            logBody.innerHTML = renderLiveLogs(payload.live_logs);
-            if (logConsole && stickToBottom) {
-                logConsole.scrollTop = logConsole.scrollHeight;
+            const logs = Array.isArray(payload.live_logs) ? payload.live_logs : [];
+            const last = logs.length > 0 ? logs[logs.length - 1] : null;
+            const fingerprint = `${logs.length}|${String(last?.at || '')}|${String(last?.level || '')}|${String(last?.message || '')}`;
+            if (fingerprint !== lastLogsFingerprint) {
+                const stickToBottom = isNearBottom(logConsole);
+                logBody.innerHTML = renderLiveLogs(logs);
+                if (logConsole && stickToBottom) {
+                    logConsole.scrollTop = logConsole.scrollHeight;
+                }
+                lastLogsFingerprint = fingerprint;
             }
         }
 
@@ -527,6 +534,6 @@ if (!empty($site['progress_log']) && is_string($site['progress_log'])) {
     };
 
     void tick();
-    polling = setInterval(tick, 2500);
+    polling = setInterval(tick, 3500);
 })();
 </script>
