@@ -28,7 +28,16 @@ const PROGRESS_DEBUG_MIN_INTERVAL_MS = Math.max(
   0,
   Number(process.env.CRAWLER_PROGRESS_DEBUG_MIN_INTERVAL_MS || 1200)
 );
+const PROGRESS_HARD_TIMEOUT_MS = Math.max(
+  400,
+  Number(process.env.CRAWLER_PROGRESS_HARD_TIMEOUT_MS || 1200)
+);
+const PROGRESS_QUEUE_MAX = Math.max(
+  10,
+  Number(process.env.CRAWLER_PROGRESS_QUEUE_MAX || 200)
+);
 const progressDebugLastSentByRun = new Map();
+const progressQueueByRun = new Map();
 
 function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -1087,7 +1096,109 @@ async function discoverUrlsFromSitemaps(options) {
   return discovered;
 }
 
-async function reportProgress(progressCallback, progressPayload) {
+function progressRunKey(progressCallback) {
+  const siteId = Number(progressCallback.siteId || 0);
+  const runId = Number(progressCallback.runId || 0);
+
+  return siteId > 0 && runId > 0 ? `${siteId}:${runId}` : "global";
+}
+
+function enqueueProgress(progressCallback, eventPayload) {
+  const runKey = progressRunKey(progressCallback);
+  let state = progressQueueByRun.get(runKey);
+  if (!state) {
+    state = {
+      sending: false,
+      queue: [],
+      touchedAt: Date.now()
+    };
+    progressQueueByRun.set(runKey, state);
+  }
+  state.touchedAt = Date.now();
+
+  if (eventPayload.eventLevel === "debug") {
+    const last = state.queue.length > 0 ? state.queue[state.queue.length - 1] : null;
+    if (last && last.eventLevel === "debug") {
+      state.queue[state.queue.length - 1] = eventPayload;
+    } else {
+      state.queue.push(eventPayload);
+    }
+  } else {
+    state.queue.push(eventPayload);
+  }
+
+  while (state.queue.length > PROGRESS_QUEUE_MAX) {
+    const debugIndex = state.queue.findIndex((item) => item.eventLevel === "debug");
+    if (debugIndex >= 0) {
+      state.queue.splice(debugIndex, 1);
+      continue;
+    }
+    state.queue.shift();
+  }
+
+  if (!state.sending) {
+    void flushProgressQueue(runKey, state);
+  }
+}
+
+async function sendProgressEvent(eventPayload) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROGRESS_HARD_TIMEOUT_MS);
+  const headers = {
+    "Content-Type": "application/json"
+  };
+  if (eventPayload.token) {
+    headers["X-Crawler-Progress-Token"] = eventPayload.token;
+  }
+
+  try {
+    const fetchPromise = fetch(eventPayload.url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        siteId: eventPayload.siteId,
+        runId: eventPayload.runId,
+        pagesVisited: eventPayload.pagesVisited,
+        currentUrl: eventPayload.currentUrl,
+        event: eventPayload.event,
+        eventLevel: eventPayload.eventLevel
+      }),
+      signal: controller.signal
+    });
+    const fetchResult = await withHardTimeout(
+      fetchPromise,
+      PROGRESS_HARD_TIMEOUT_MS,
+      () => null
+    );
+    if (fetchResult === null) {
+      controller.abort();
+    }
+  } catch (error) {
+    console.error("[crawler] progress callback failed:", errorToMessage(error));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function flushProgressQueue(runKey, state) {
+  state.sending = true;
+  try {
+    while (state.queue.length > 0) {
+      const nextEvent = state.queue.shift();
+      if (!nextEvent) {
+        continue;
+      }
+      await sendProgressEvent(nextEvent);
+    }
+  } finally {
+    state.sending = false;
+    if (state.queue.length === 0 && Date.now() - state.touchedAt > 10_000) {
+      progressQueueByRun.delete(runKey);
+    }
+  }
+}
+
+function reportProgress(progressCallback, progressPayload) {
   if (!progressCallback || !progressCallback.url) {
     return;
   }
@@ -1095,9 +1206,7 @@ async function reportProgress(progressCallback, progressPayload) {
   const eventLevelRaw = String(progressPayload.eventLevel || "info").trim().toLowerCase();
   const eventLevel = ["info", "warn", "error", "debug"].includes(eventLevelRaw) ? eventLevelRaw : "info";
   if (eventLevel === "debug" && PROGRESS_DEBUG_MIN_INTERVAL_MS > 0) {
-    const siteId = Number(progressCallback.siteId || 0);
-    const runId = Number(progressCallback.runId || 0);
-    const runKey = siteId > 0 && runId > 0 ? `${siteId}:${runId}` : "global";
+    const runKey = progressRunKey(progressCallback);
     const now = Date.now();
     const lastSentAt = Number(progressDebugLastSentByRun.get(runKey) || 0);
     if (now - lastSentAt < PROGRESS_DEBUG_MIN_INTERVAL_MS) {
@@ -1109,36 +1218,16 @@ async function reportProgress(progressCallback, progressPayload) {
     }
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1500);
-  const headers = {
-    "Content-Type": "application/json"
-  };
-  if (progressCallback.token) {
-    headers["X-Crawler-Progress-Token"] = progressCallback.token;
-  }
-
-  try {
-    const event = String(progressPayload.event || "").trim();
-    await fetch(progressCallback.url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        siteId: Number(progressCallback.siteId || 0),
-        runId: Number(progressCallback.runId || 0),
-        pagesVisited: Number(progressPayload.pagesVisited || 0),
-        currentUrl: progressPayload.currentUrl || "",
-        event: event,
-        eventLevel: eventLevel
-      }),
-      signal: controller.signal
-    });
-  } catch (error) {
-    // Progress callback failures should not break crawling.
-    console.error("[crawler] progress callback failed:", errorToMessage(error));
-  } finally {
-    clearTimeout(timer);
-  }
+  enqueueProgress(progressCallback, {
+    url: progressCallback.url,
+    token: progressCallback.token || "",
+    siteId: Number(progressCallback.siteId || 0),
+    runId: Number(progressCallback.runId || 0),
+    pagesVisited: Number(progressPayload.pagesVisited || 0),
+    currentUrl: progressPayload.currentUrl || "",
+    event: String(progressPayload.event || "").trim(),
+    eventLevel
+  });
 }
 
 async function crawlSite(options) {
@@ -1162,16 +1251,20 @@ async function crawlSite(options) {
   const dynamicScrollPauseMinMs = Math.max(100, Number(process.env.CRAWLER_DYNAMIC_SCROLL_PAUSE_MIN_MS || 500));
   const dynamicScrollPauseMaxMs = Math.max(dynamicScrollPauseMinMs, Number(process.env.CRAWLER_DYNAMIC_SCROLL_PAUSE_MAX_MS || 1200));
   const sitemapEnabled = String(process.env.CRAWLER_SITEMAP_ENABLED || "1") !== "0";
-  const sitemapMaxFiles = Math.max(1, Number(process.env.CRAWLER_SITEMAP_MAX_FILES || 250));
+  const sitemapMaxFilesDefault = Math.max(250, Math.min(2000, Math.ceil(maxPages / 30)));
+  const sitemapMaxFiles = Math.max(1, Number(process.env.CRAWLER_SITEMAP_MAX_FILES || sitemapMaxFilesDefault));
   const sitemapMaxDepth = Math.max(1, Number(process.env.CRAWLER_SITEMAP_MAX_DEPTH || 6));
   const sitemapRequestTimeoutMs = Math.max(1000, Number(process.env.CRAWLER_SITEMAP_REQUEST_TIMEOUT_MS || 8000));
   const sitemapDiscoveryMaxMsConfigured = Number(process.env.CRAWLER_SITEMAP_DISCOVERY_MAX_MS || 0);
   const sitemapDiscoveryMaxMsDefault = Math.max(60_000, Math.min(240_000, Math.floor(maxDurationMs * 0.45)));
   const sitemapDiscoveryMaxMs = Math.max(
-    30_000,
+    180_000,
     sitemapDiscoveryMaxMsConfigured > 0 ? sitemapDiscoveryMaxMsConfigured : sitemapDiscoveryMaxMsDefault
   );
-  const sitemapMaxUrls = Math.max(maxPages, Number(process.env.CRAWLER_SITEMAP_MAX_URLS || 50000));
+  const sitemapMaxUrls = Math.max(
+    maxPages,
+    Number(process.env.CRAWLER_SITEMAP_MAX_URLS || maxPages)
+  );
   const sitemapPagePauseMs = Math.max(0, Number(process.env.CRAWLER_SITEMAP_PAGE_PAUSE_MS || 200));
   const humanOnSitemap = String(process.env.CRAWLER_HUMAN_ON_SITEMAP || "0") === "1";
   const dynamicOnSitemap = String(process.env.CRAWLER_DYNAMIC_ON_SITEMAP || "0") === "1";
@@ -1283,7 +1376,7 @@ async function crawlSite(options) {
     await reportProgress(progressCallback, {
       pagesVisited: 0,
       currentUrl: startUrl,
-      event: `Конфиг обхода: maxPages=${maxPages}, maxDepth=${maxDepth}, pagePauseMs=${pagePauseMs}, timeoutMs=${timeoutMs}, pageMaxMs=${pageMaxMs}, maxDurationMs=${maxDurationMs}`,
+      event: `Конфиг обхода: maxPages=${maxPages}, maxDepth=${maxDepth}, pagePauseMs=${pagePauseMs}, timeoutMs=${timeoutMs}, pageMaxMs=${pageMaxMs}, maxDurationMs=${maxDurationMs}, sitemapDiscoveryMaxMs=${sitemapDiscoveryMaxMs}, sitemapMaxFiles=${sitemapMaxFiles}, sitemapMaxUrls=${sitemapMaxUrls}`,
       eventLevel: "debug"
     });
 
@@ -1421,11 +1514,11 @@ async function crawlSite(options) {
         await reportProgress(progressCallback, {
           pagesVisited: pages.length,
           currentUrl: current.url,
-          event: `Навигация page.goto(waitUntil=load, timeout=${navigationTimeoutMs}мс)`,
+          event: `Навигация page.goto(waitUntil=domcontentloaded, timeout=${navigationTimeoutMs}мс)`,
           eventLevel: "debug"
         });
         const navigationStartedAt = Date.now();
-        const response = await page.goto(current.url, { waitUntil: "load", timeout: navigationTimeoutMs });
+        const response = await page.goto(current.url, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
         const navigationElapsedMs = Date.now() - navigationStartedAt;
         status = response ? response.status() : null;
         pacer.markResponse(status);
