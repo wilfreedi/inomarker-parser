@@ -31,7 +31,7 @@ final class SettingRepositoryTest extends TestCase
         $all = $repository->all();
         self::assertSame('123', $all['crawler_max_pages']);
         self::assertSame('250', $all['crawler_page_pause_ms']);
-        self::assertSame('10', $all['crawler_max_depth']);
+        self::assertSame('15', $all['crawler_max_depth']);
+        self::assertSame('3', $all['worker_parallel_sites']);
     }
 }
-

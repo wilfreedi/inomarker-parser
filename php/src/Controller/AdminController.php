@@ -349,6 +349,7 @@ final class AdminController
     {
         $allowedKeys = [
             'worker_batch_size',
+            'worker_parallel_sites',
             'scan_interval_minutes',
             'worker_stale_run_minutes',
             'crawler_max_pages',
@@ -376,6 +377,10 @@ final class AdminController
             }
             if ($key === 'crawler_request_timeout_seconds') {
                 $settings[$key] = max(30, $value);
+                continue;
+            }
+            if ($key === 'worker_parallel_sites') {
+                $settings[$key] = min(3, max(1, $value));
                 continue;
             }
             $settings[$key] = max(1, $value);

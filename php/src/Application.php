@@ -117,13 +117,13 @@ final class Application
         }
         $settings = $this->settingRepository->all();
         $this->crawlOrchestrator->scanSite($site, [
-            'max_pages' => (int) ($settings['crawler_max_pages'] ?? 5000),
-            'max_depth' => (int) ($settings['crawler_max_depth'] ?? 10),
-            'timeout_ms' => (int) ($settings['crawler_timeout_ms'] ?? 30000),
-            'page_pause_ms' => (int) ($settings['crawler_page_pause_ms'] ?? 1000),
-            'request_timeout_seconds' => (int) ($settings['crawler_request_timeout_seconds'] ?? 300),
-            'retry_attempts' => (int) ($settings['crawler_retry_attempts'] ?? 2),
-            'retry_delay_ms' => (int) ($settings['crawler_retry_delay_ms'] ?? 1500),
+            'max_pages' => (int) ($settings['crawler_max_pages'] ?? 10000),
+            'max_depth' => (int) ($settings['crawler_max_depth'] ?? 15),
+            'timeout_ms' => (int) ($settings['crawler_timeout_ms'] ?? 45000),
+            'page_pause_ms' => (int) ($settings['crawler_page_pause_ms'] ?? 1500),
+            'request_timeout_seconds' => (int) ($settings['crawler_request_timeout_seconds'] ?? 600),
+            'retry_attempts' => (int) ($settings['crawler_retry_attempts'] ?? 3),
+            'retry_delay_ms' => (int) ($settings['crawler_retry_delay_ms'] ?? 2500),
         ]);
     }
 }

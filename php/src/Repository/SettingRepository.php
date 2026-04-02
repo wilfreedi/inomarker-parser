@@ -10,16 +10,17 @@ final class SettingRepository
 {
     /** @var array<string, string> */
     private const DEFAULTS = [
-        'worker_batch_size' => '2',
+        'worker_batch_size' => '3',
+        'worker_parallel_sites' => '3',
         'scan_interval_minutes' => '360',
         'worker_stale_run_minutes' => '5',
-        'crawler_max_pages' => '5000',
-        'crawler_max_depth' => '10',
-        'crawler_timeout_ms' => '30000',
-        'crawler_page_pause_ms' => '1000',
-        'crawler_request_timeout_seconds' => '300',
-        'crawler_retry_attempts' => '2',
-        'crawler_retry_delay_ms' => '1500',
+        'crawler_max_pages' => '10000',
+        'crawler_max_depth' => '15',
+        'crawler_timeout_ms' => '45000',
+        'crawler_page_pause_ms' => '1500',
+        'crawler_request_timeout_seconds' => '600',
+        'crawler_retry_attempts' => '3',
+        'crawler_retry_delay_ms' => '2500',
     ];
 
     public function __construct(private readonly PDO $pdo)

@@ -118,6 +118,73 @@ async function emulateHumanBehavior(page, options) {
   await sleepUntilDeadline(dwellMs, deadlineAt, abortSignal);
 }
 
+async function discoverDynamicLinks(page, options) {
+  const deadlineAt = Number(options.deadlineAt || Date.now());
+  const abortSignal = options.abortSignal || null;
+  const maxSteps = Math.max(0, Number(options.maxSteps || 8));
+  const stableStepsToStop = Math.max(1, Number(options.stableStepsToStop || 2));
+  const pauseMinMs = Math.max(100, Number(options.pauseMinMs || 500));
+  const pauseMaxMs = Math.max(pauseMinMs, Number(options.pauseMaxMs || 1200));
+
+  if (maxSteps <= 0) {
+    return;
+  }
+
+  let stableSteps = 0;
+  for (let step = 0; step < maxSteps; step++) {
+    if ((abortSignal && abortSignal.aborted) || remainingMs(deadlineAt) <= 1200) {
+      return;
+    }
+
+    const before = await page.evaluate(() => ({
+      linksCount: document.querySelectorAll("a[href]").length,
+      scrollHeight: Math.max(
+        document.body ? document.body.scrollHeight : 0,
+        document.documentElement ? document.documentElement.scrollHeight : 0
+      )
+    })).catch(() => null);
+    if (!before) {
+      return;
+    }
+
+    await page.evaluate(() => {
+      const target = Math.max(
+        document.body ? document.body.scrollHeight : 0,
+        document.documentElement ? document.documentElement.scrollHeight : 0
+      );
+      window.scrollTo({ top: target, behavior: "auto" });
+    }).catch(() => undefined);
+
+    const pauseMs = randomInt(pauseMinMs, pauseMaxMs);
+    const canContinue = await sleepUntilDeadline(pauseMs, deadlineAt, abortSignal);
+    if (!canContinue) {
+      return;
+    }
+
+    const after = await page.evaluate(() => ({
+      linksCount: document.querySelectorAll("a[href]").length,
+      scrollHeight: Math.max(
+        document.body ? document.body.scrollHeight : 0,
+        document.documentElement ? document.documentElement.scrollHeight : 0
+      )
+    })).catch(() => null);
+    if (!after) {
+      return;
+    }
+
+    const hasGrowth = after.linksCount > before.linksCount || after.scrollHeight > before.scrollHeight;
+    if (!hasGrowth) {
+      stableSteps++;
+      if (stableSteps >= stableStepsToStop) {
+        return;
+      }
+      continue;
+    }
+
+    stableSteps = 0;
+  }
+}
+
 function createSessionProfile() {
   const userAgent = pickUserAgent();
   return {
@@ -271,6 +338,11 @@ async function crawlSite(options) {
   const humanActionsMax = Math.max(humanActionsMin, Number(process.env.CRAWLER_HUMAN_ACTIONS_MAX || 6));
   const humanDwellMinMs = Math.max(500, Number(process.env.CRAWLER_HUMAN_DWELL_MIN_MS || 2000));
   const humanDwellMaxMs = Math.max(humanDwellMinMs, Number(process.env.CRAWLER_HUMAN_DWELL_MAX_MS || 10000));
+  const dynamicScrollEnabled = String(process.env.CRAWLER_DYNAMIC_SCROLL_ENABLED || "1") !== "0";
+  const dynamicScrollMaxSteps = Math.max(0, Number(process.env.CRAWLER_DYNAMIC_SCROLL_MAX_STEPS || 8));
+  const dynamicScrollStableSteps = Math.max(1, Number(process.env.CRAWLER_DYNAMIC_SCROLL_STABLE_STEPS || 2));
+  const dynamicScrollPauseMinMs = Math.max(100, Number(process.env.CRAWLER_DYNAMIC_SCROLL_PAUSE_MIN_MS || 500));
+  const dynamicScrollPauseMaxMs = Math.max(dynamicScrollPauseMinMs, Number(process.env.CRAWLER_DYNAMIC_SCROLL_PAUSE_MAX_MS || 1200));
   const pageRecycleEvery = Math.max(0, Number(process.env.CRAWLER_PAGE_RECYCLE_EVERY || 50));
   const pagePauseMs = Math.max(0, Number(options.pagePauseMs || 1000));
   const abortSignal = options.abortSignal || null;
@@ -404,6 +476,16 @@ async function crawlSite(options) {
           dwellMinMs: humanDwellMinMs,
           dwellMaxMs: humanDwellMaxMs
         });
+        if (dynamicScrollEnabled && remainingMs(pageDeadlineAt) > 1200) {
+          await discoverDynamicLinks(page, {
+            deadlineAt: pageDeadlineAt,
+            abortSignal,
+            maxSteps: dynamicScrollMaxSteps,
+            stableStepsToStop: dynamicScrollStableSteps,
+            pauseMinMs: dynamicScrollPauseMinMs,
+            pauseMaxMs: dynamicScrollPauseMaxMs
+          });
+        }
 
         if (remainingMs(pageDeadlineAt) <= 0) {
           await page.evaluate(() => window.stop()).catch(() => undefined);
