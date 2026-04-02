@@ -167,7 +167,19 @@ function isLikelySitemapUrl(url, siteHost) {
   return pathname.endsWith(".xml") || pathname.endsWith(".xml.gz") || pathname.includes("sitemap");
 }
 
-async function fetchTextWithTimeout(url, timeoutMs) {
+function looksLikeJsChallengeBody(body) {
+  const value = String(body || "").toLowerCase();
+  if (value === "") {
+    return false;
+  }
+
+  return value.includes("__js_p_")
+    || value.includes("get_jhash(")
+    || value.includes("construct_utm_uri")
+    || value.includes("noindex, noarchive");
+}
+
+async function fetchTextWithHttp(url, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(1000, timeoutMs));
 
@@ -175,18 +187,152 @@ async function fetchTextWithTimeout(url, timeoutMs) {
     const response = await fetch(url, {
       method: "GET",
       redirect: "follow",
-      signal: controller.signal
+      signal: controller.signal,
+      headers: {
+        "User-Agent": pickUserAgent(),
+        "Accept": "text/plain, application/xml, text/xml, */*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache"
+      }
     });
-    if (!response.ok) {
-      return "";
-    }
+    const body = await response.text();
+    const contentType = String(response.headers.get("content-type") || "").toLowerCase();
 
-    return await response.text();
-  } catch (_) {
-    return "";
+    return {
+      body,
+      status: Number(response.status || 0),
+      contentType,
+      source: "http",
+      error: "",
+      challenge: looksLikeJsChallengeBody(body)
+    };
+  } catch (error) {
+    return {
+      body: "",
+      status: 0,
+      contentType: "",
+      source: "http",
+      error: errorToMessage(error),
+      challenge: false
+    };
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function fetchTextWithBrowserPage(page, url, timeoutMs) {
+  const deadlineAt = Date.now() + Math.max(2_000, timeoutMs);
+  let lastStatus = 0;
+  let lastContentType = "";
+  let lastBody = "";
+  let lastError = "";
+  let challengeDetected = false;
+
+  while (Date.now() < deadlineAt) {
+    const remaining = Math.max(1_000, deadlineAt - Date.now());
+    const navigationTimeoutMs = Math.min(10_000, remaining);
+    try {
+      const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
+      lastStatus = Number(response ? response.status() : 0);
+      lastContentType = String(response ? response.headers()["content-type"] || "" : "").toLowerCase();
+    } catch (error) {
+      lastError = errorToMessage(error);
+    }
+
+    const snapshot = await page.evaluate(() => {
+      const contentType = String(document.contentType || "").toLowerCase();
+      const pre = document.querySelector("pre");
+      const bodyText = pre
+        ? String(pre.textContent || "")
+        : (document.body ? String(document.body.innerText || document.body.textContent || "") : "");
+      const html = document.documentElement ? String(document.documentElement.outerHTML || "") : "";
+      const serialized = typeof XMLSerializer !== "undefined"
+        ? String(new XMLSerializer().serializeToString(document) || "")
+        : "";
+
+      let text = html;
+      if (contentType.includes("text/plain")) {
+        text = bodyText;
+      } else if (contentType.includes("xml")) {
+        text = serialized;
+      } else if (pre && bodyText.trim() !== "") {
+        text = bodyText;
+      }
+
+      return {
+        text,
+        contentType,
+        location: String(window.location.href || "")
+      };
+    }).catch(() => null);
+    if (snapshot !== null) {
+      if (snapshot.contentType !== "") {
+        lastContentType = snapshot.contentType;
+      }
+      lastBody = String(snapshot.text || "");
+    }
+
+    challengeDetected = looksLikeJsChallengeBody(lastBody);
+    if (!challengeDetected && lastBody.trim() !== "") {
+      return {
+        body: lastBody,
+        status: lastStatus,
+        contentType: lastContentType,
+        source: "browser",
+        error: lastError,
+        challenge: false
+      };
+    }
+
+    if (Date.now() + 900 >= deadlineAt) {
+      break;
+    }
+
+    await Promise.race([
+      page.waitForNavigation({
+        waitUntil: "domcontentloaded",
+        timeout: Math.min(3_000, Math.max(1_000, deadlineAt - Date.now()))
+      }).catch(() => undefined),
+      sleep(1_100)
+    ]);
+  }
+
+  return {
+    body: lastBody,
+    status: lastStatus,
+    contentType: lastContentType,
+    source: "browser",
+    error: lastError,
+    challenge: challengeDetected
+  };
+}
+
+async function fetchTextWithTimeout(url, timeoutMs, browserFetch) {
+  const httpResult = await fetchTextWithHttp(url, timeoutMs);
+  const browserFetcher = typeof browserFetch === "function" ? browserFetch : null;
+  if (browserFetcher === null) {
+    return httpResult;
+  }
+
+  const unexpectedHtml = httpResult.contentType.includes("text/html");
+  const shouldFallbackToBrowser = (
+    httpResult.body.trim() === ""
+    || httpResult.status >= 400
+    || httpResult.challenge
+    || unexpectedHtml
+  );
+  if (!shouldFallbackToBrowser) {
+    return httpResult;
+  }
+
+  const browserResult = await browserFetcher(url, timeoutMs);
+  const isBrowserUseful = browserResult.body.trim() !== "" && !browserResult.challenge;
+  if (isBrowserUseful) {
+    return browserResult;
+  }
+
+  return browserResult.body.trim() !== "" ? browserResult : httpResult;
 }
 
 function sleep(ms) {
@@ -584,6 +730,7 @@ async function discoverUrlsFromSitemaps(options) {
   const siteHost = options.siteHost;
   const abortSignal = options.abortSignal || null;
   const progressCallback = options.progressCallback || null;
+  const browserFetch = typeof options.browserFetch === "function" ? options.browserFetch : null;
   const pagesVisited = Math.max(0, Number(options.pagesVisited || 0));
   const crawlDeadlineAt = Number(options.crawlDeadlineAt || Date.now() + 30_000);
   const discoveryMaxMs = Math.max(1_000, Number(options.discoveryMaxMs || 45_000));
@@ -627,14 +774,29 @@ async function discoverUrlsFromSitemaps(options) {
     event: "Проверка robots.txt и sitemap",
     eventLevel: "info"
   });
-  const robotsText = await fetchTextWithTimeout(robotsUrl, requestTimeoutMs);
+  const robotsFetch = await fetchTextWithTimeout(robotsUrl, requestTimeoutMs, browserFetch);
+  const robotsText = String(robotsFetch.body || "");
+  await reportProgress(progressCallback, {
+    pagesVisited,
+    currentUrl: robotsUrl,
+    event: `robots.txt: source=${robotsFetch.source}, status=${robotsFetch.status || "n/a"}, contentType=${robotsFetch.contentType || "n/a"}, bytes=${robotsText.length}, challenge=${robotsFetch.challenge ? "yes" : "no"}`,
+    eventLevel: robotsText === "" ? "warn" : "debug"
+  });
+  if (robotsFetch.error) {
+    await reportProgress(progressCallback, {
+      pagesVisited,
+      currentUrl: robotsUrl,
+      event: `Ошибка чтения robots.txt: ${robotsFetch.error}`,
+      eventLevel: "warn"
+    });
+  }
   const sitemapCandidates = extractSitemapDirectives(robotsText);
   if (sitemapCandidates.length === 0) {
     enqueueSitemap(new URL("/sitemap.xml", origin).toString(), 0);
     await reportProgress(progressCallback, {
       pagesVisited,
       currentUrl: "",
-      event: "В robots.txt sitemap не найден, пробуем /sitemap.xml",
+      event: "В robots.txt sitemap не найден, пробуем /sitemap.xml (fallback)",
       eventLevel: "warn"
     });
   } else {
@@ -668,14 +830,23 @@ async function discoverUrlsFromSitemaps(options) {
       continue;
     }
 
-    const xmlBody = await fetchTextWithTimeout(current.url, requestTimeoutMs);
+    const sitemapFetch = await fetchTextWithTimeout(current.url, requestTimeoutMs, browserFetch);
+    const xmlBody = String(sitemapFetch.body || "");
     fetchedSitemapFiles++;
     await reportProgress(progressCallback, {
       pagesVisited,
       currentUrl: current.url,
-      event: `Обработка sitemap #${fetchedSitemapFiles}: ${current.url}`,
+      event: `Обработка sitemap #${fetchedSitemapFiles}: ${current.url}; source=${sitemapFetch.source}; status=${sitemapFetch.status || "n/a"}; contentType=${sitemapFetch.contentType || "n/a"}; bytes=${xmlBody.length}; challenge=${sitemapFetch.challenge ? "yes" : "no"}`,
       eventLevel: "debug"
     });
+    if (sitemapFetch.error) {
+      await reportProgress(progressCallback, {
+        pagesVisited,
+        currentUrl: current.url,
+        event: `Ошибка загрузки sitemap: ${sitemapFetch.error}`,
+        eventLevel: "warn"
+      });
+    }
     if (xmlBody === "") {
       await reportProgress(progressCallback, {
         pagesVisited,
@@ -689,6 +860,15 @@ async function discoverUrlsFromSitemaps(options) {
     const nestedSitemaps = extractLocEntries(xmlBody, "sitemap");
     const pageLocs = extractLocEntries(xmlBody, "url");
     const fallbackLocs = nestedSitemaps.length === 0 && pageLocs.length === 0 ? extractGenericLocs(xmlBody) : [];
+    if (nestedSitemaps.length === 0 && pageLocs.length === 0 && fallbackLocs.length === 0) {
+      const bodyPreview = xmlBody.replace(/\s+/g, " ").slice(0, 180);
+      await reportProgress(progressCallback, {
+        pagesVisited,
+        currentUrl: current.url,
+        event: `Sitemap без <loc>: preview="${bodyPreview}"`,
+        eventLevel: "warn"
+      });
+    }
     await reportProgress(progressCallback, {
       pagesVisited,
       currentUrl: current.url,
@@ -876,6 +1056,19 @@ async function crawlSite(options) {
     return nextPage;
   };
   let page = await createGuardedPage();
+  let metadataPage = null;
+  const getMetadataPage = async () => {
+    if (metadataPage !== null && !metadataPage.isClosed()) {
+      return metadataPage;
+    }
+    metadataPage = await createGuardedPage();
+
+    return metadataPage;
+  };
+  const browserMetadataFetch = async (url, requestTimeoutMs) => {
+    const metaPage = await getMetadataPage();
+    return fetchTextWithBrowserPage(metaPage, url, requestTimeoutMs);
+  };
 
   const queue = [{ url: startUrl, depth: 0, source: "seed" }];
   const queued = new Set([startUrl]);
@@ -890,6 +1083,11 @@ async function crawlSite(options) {
       return;
     }
     contextClosed = true;
+    if (metadataPage !== null) {
+      metadataPage.off("popup", popupHandler);
+      await metadataPage.close().catch(() => undefined);
+      metadataPage = null;
+    }
     page.off("popup", popupHandler);
     await page.close().catch(() => undefined);
     await context.close().catch(() => undefined);
@@ -929,7 +1127,8 @@ async function crawlSite(options) {
         requestTimeoutMs: sitemapRequestTimeoutMs,
         maxSitemapFiles: sitemapMaxFiles,
         maxSitemapDepth: sitemapMaxDepth,
-        maxDiscoveredUrls: sitemapMaxUrls
+        maxDiscoveredUrls: sitemapMaxUrls,
+        browserFetch: browserMetadataFetch
       });
 
       for (const sitemapUrl of sitemapUrls) {
