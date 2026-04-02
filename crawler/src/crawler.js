@@ -351,6 +351,22 @@ async function fetchTextWithTimeout(url, timeoutMs, browserFetch) {
   return browserResult.body.trim() !== "" ? browserResult : httpResult;
 }
 
+async function withHardTimeout(promise, timeoutMs, timeoutResultFactory) {
+  const safeTimeoutMs = Math.max(1000, Number(timeoutMs || 1000));
+  let timer = null;
+  try {
+    const timeoutPromise = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(timeoutResultFactory()), safeTimeoutMs);
+    });
+
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer !== null) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -855,7 +871,19 @@ async function discoverUrlsFromSitemaps(options) {
     event: "Проверка robots.txt и sitemap",
     eventLevel: "info"
   });
-  const robotsFetch = await fetchTextWithTimeout(robotsUrl, requestTimeoutMs, browserFetch);
+  const robotsHardTimeoutMs = Math.max(4_000, requestTimeoutMs + 5_000);
+  const robotsFetch = await withHardTimeout(
+    fetchTextWithTimeout(robotsUrl, requestTimeoutMs, browserFetch),
+    robotsHardTimeoutMs,
+    () => ({
+      body: "",
+      status: 0,
+      contentType: "",
+      source: "timeout",
+      error: `robots hard-timeout ${robotsHardTimeoutMs}ms`,
+      challenge: false
+    })
+  );
   const robotsText = String(robotsFetch.body || "");
   await reportProgress(progressCallback, {
     pagesVisited,
@@ -927,13 +955,27 @@ async function discoverUrlsFromSitemaps(options) {
       continue;
     }
 
-    const sitemapFetch = await fetchTextWithTimeout(current.url, requestTimeoutMs, browserFetch);
+    const sitemapHardTimeoutMs = Math.max(5_000, requestTimeoutMs + 7_000);
+    const sitemapFetchStartedAt = Date.now();
+    const sitemapFetch = await withHardTimeout(
+      fetchTextWithTimeout(current.url, requestTimeoutMs, browserFetch),
+      sitemapHardTimeoutMs,
+      () => ({
+        body: "",
+        status: 0,
+        contentType: "",
+        source: "timeout",
+        error: `sitemap hard-timeout ${sitemapHardTimeoutMs}ms`,
+        challenge: false
+      })
+    );
+    const sitemapFetchElapsedMs = Date.now() - sitemapFetchStartedAt;
     const xmlBody = String(sitemapFetch.body || "");
     fetchedSitemapFiles++;
     await reportProgress(progressCallback, {
       pagesVisited,
       currentUrl: current.url,
-      event: `Обработка sitemap #${fetchedSitemapFiles}: ${current.url}; source=${sitemapFetch.source}; status=${sitemapFetch.status || "n/a"}; contentType=${sitemapFetch.contentType || "n/a"}; bytes=${xmlBody.length}; challenge=${sitemapFetch.challenge ? "yes" : "no"}`,
+      event: `Обработка sitemap #${fetchedSitemapFiles}: ${current.url}; source=${sitemapFetch.source}; status=${sitemapFetch.status || "n/a"}; contentType=${sitemapFetch.contentType || "n/a"}; bytes=${xmlBody.length}; challenge=${sitemapFetch.challenge ? "yes" : "no"}; elapsed=${sitemapFetchElapsedMs}ms`,
       eventLevel: "debug"
     });
     if (sitemapFetch.error) {
