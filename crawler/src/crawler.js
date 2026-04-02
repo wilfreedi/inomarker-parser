@@ -611,6 +611,9 @@ async function crawlSite(options) {
   const sitemapRequestTimeoutMs = Math.max(1000, Number(process.env.CRAWLER_SITEMAP_REQUEST_TIMEOUT_MS || 8000));
   const sitemapDiscoveryMaxMs = Math.max(1000, Number(process.env.CRAWLER_SITEMAP_DISCOVERY_MAX_MS || 45000));
   const sitemapMaxUrls = Math.max(maxPages, Number(process.env.CRAWLER_SITEMAP_MAX_URLS || 50000));
+  const sitemapPagePauseMs = Math.max(0, Number(process.env.CRAWLER_SITEMAP_PAGE_PAUSE_MS || 200));
+  const humanOnSitemap = String(process.env.CRAWLER_HUMAN_ON_SITEMAP || "0") === "1";
+  const dynamicOnSitemap = String(process.env.CRAWLER_DYNAMIC_ON_SITEMAP || "0") === "1";
   const pageRecycleEvery = Math.max(0, Number(process.env.CRAWLER_PAGE_RECYCLE_EVERY || 50));
   const pagePauseMs = Math.max(0, Number(options.pagePauseMs || 1000));
   const abortSignal = options.abortSignal || null;
@@ -661,7 +664,7 @@ async function crawlSite(options) {
   };
   let page = await createGuardedPage();
 
-  const queue = [{ url: startUrl, depth: 0 }];
+  const queue = [{ url: startUrl, depth: 0, source: "seed" }];
   const queued = new Set([startUrl]);
   const visited = new Set();
   const pages = [];
@@ -710,7 +713,7 @@ async function crawlSite(options) {
         if (queued.has(sitemapUrl) || visited.has(sitemapUrl)) {
           continue;
         }
-        queue.push({ url: sitemapUrl, depth: 1 });
+        queue.push({ url: sitemapUrl, depth: 1, source: "sitemap" });
         queued.add(sitemapUrl);
       }
     }
@@ -725,13 +728,15 @@ async function crawlSite(options) {
         stopReason = "max_duration_reached";
         break;
       }
-      if (shouldPauseBeforeNextRequest && pagePauseMs > 0) {
-        await sleep(pagePauseMs);
-      }
-
       const current = queue.shift();
       if (!current || visited.has(current.url)) {
         continue;
+      }
+      if (shouldPauseBeforeNextRequest) {
+        const pauseMs = current.source === "sitemap" ? sitemapPagePauseMs : pagePauseMs;
+        if (pauseMs > 0) {
+          await sleep(pauseMs);
+        }
       }
       queued.delete(current.url);
       visited.add(current.url);
@@ -760,15 +765,19 @@ async function crawlSite(options) {
         status = response ? response.status() : null;
         pacer.markResponse(status);
 
-        await emulateHumanBehavior(page, {
-          deadlineAt: pageDeadlineAt,
-          abortSignal,
-          minActions: humanActionsMin,
-          maxActions: humanActionsMax,
-          dwellMinMs: humanDwellMinMs,
-          dwellMaxMs: humanDwellMaxMs
-        });
-        if (dynamicScrollEnabled && remainingMs(pageDeadlineAt) > 1200) {
+        const allowHumanBehavior = current.source !== "sitemap" || humanOnSitemap;
+        if (allowHumanBehavior) {
+          await emulateHumanBehavior(page, {
+            deadlineAt: pageDeadlineAt,
+            abortSignal,
+            minActions: humanActionsMin,
+            maxActions: humanActionsMax,
+            dwellMinMs: humanDwellMinMs,
+            dwellMaxMs: humanDwellMaxMs
+          });
+        }
+        const allowDynamicScroll = dynamicScrollEnabled && (current.source !== "sitemap" || dynamicOnSitemap);
+        if (allowDynamicScroll && remainingMs(pageDeadlineAt) > 1200) {
           await discoverDynamicLinks(page, {
             deadlineAt: pageDeadlineAt,
             abortSignal,
@@ -845,7 +854,7 @@ async function crawlSite(options) {
       if (current.depth < maxDepth) {
         for (const link of pageLinks) {
           if (!visited.has(link) && !queued.has(link)) {
-            queue.push({ url: link, depth: current.depth + 1 });
+            queue.push({ url: link, depth: current.depth + 1, source: "dom" });
             queued.add(link);
           }
         }
