@@ -142,6 +142,21 @@ async function applySessionProfile(page, profile) {
   });
 }
 
+async function applyRuntimeProtections(page, profile, popupHandler) {
+  page.setDefaultNavigationTimeout(profile.timeoutMs);
+  page.setDefaultTimeout(profile.timeoutMs);
+  await applySessionProfile(page, profile.session);
+  await page.evaluateOnNewDocument((runtimeProfile) => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    Object.defineProperty(navigator, "platform", { get: () => runtimeProfile.platform });
+    Object.defineProperty(navigator, "languages", { get: () => runtimeProfile.languages });
+  }, {
+    platform: profile.session.platform,
+    languages: profile.session.languages
+  });
+  page.on("popup", popupHandler);
+}
+
 async function createIsolatedContext(browser) {
   if (typeof browser.createBrowserContext === "function") {
     return browser.createBrowserContext();
@@ -256,6 +271,7 @@ async function crawlSite(options) {
   const humanActionsMax = Math.max(humanActionsMin, Number(process.env.CRAWLER_HUMAN_ACTIONS_MAX || 6));
   const humanDwellMinMs = Math.max(500, Number(process.env.CRAWLER_HUMAN_DWELL_MIN_MS || 2000));
   const humanDwellMaxMs = Math.max(humanDwellMinMs, Number(process.env.CRAWLER_HUMAN_DWELL_MAX_MS || 10000));
+  const pageRecycleEvery = Math.max(0, Number(process.env.CRAWLER_PAGE_RECYCLE_EVERY || 50));
   const pagePauseMs = Math.max(0, Number(options.pagePauseMs || 1000));
   const abortSignal = options.abortSignal || null;
   const progressCallback = options.progressCallback || null;
@@ -287,26 +303,28 @@ async function crawlSite(options) {
   const browser = await puppeteer.launch(launchOptions);
 
   const context = await createIsolatedContext(browser);
-  const page = await context.newPage();
-  page.setDefaultNavigationTimeout(timeoutMs);
-  page.setDefaultTimeout(timeoutMs);
   const sessionProfile = createSessionProfile();
-  await applySessionProfile(page, sessionProfile);
+  const popupHandler = (popupPage) => {
+    void popupPage.close({ runBeforeUnload: false }).catch(() => undefined);
+  };
+  const pageProfile = {
+    timeoutMs,
+    session: sessionProfile
+  };
+  const createGuardedPage = async () => {
+    const nextPage = await context.newPage();
+    await applyRuntimeProtections(nextPage, pageProfile, popupHandler);
 
-  await page.evaluateOnNewDocument((profile) => {
-    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-    Object.defineProperty(navigator, "platform", { get: () => profile.platform });
-    Object.defineProperty(navigator, "languages", { get: () => profile.languages });
-  }, {
-    platform: sessionProfile.platform,
-    languages: sessionProfile.languages
-  });
+    return nextPage;
+  };
+  let page = await createGuardedPage();
 
   const queue = [{ url: startUrl, depth: 0 }];
   const queued = new Set([startUrl]);
   const visited = new Set();
   const pages = [];
   let stopReason = "queue_empty";
+  let processedSinceRecycle = 0;
 
   let contextClosed = false;
   const closeContext = async () => {
@@ -314,6 +332,7 @@ async function crawlSite(options) {
       return;
     }
     contextClosed = true;
+    page.off("popup", popupHandler);
     await page.close().catch(() => undefined);
     await context.close().catch(() => undefined);
     await browser.close().catch(() => undefined);
@@ -429,7 +448,25 @@ async function crawlSite(options) {
         pagesVisited: pages.length,
         currentUrl: current.url
       });
+      processedSinceRecycle++;
       shouldPauseBeforeNextRequest = true;
+
+      if (
+        pageRecycleEvery > 0
+        && processedSinceRecycle >= pageRecycleEvery
+        && queue.length > 0
+        && !(abortSignal && abortSignal.aborted)
+      ) {
+        try {
+          const previousPage = page;
+          page = await createGuardedPage();
+          processedSinceRecycle = 0;
+          previousPage.off("popup", popupHandler);
+          await previousPage.close().catch(() => undefined);
+        } catch (_) {
+          processedSinceRecycle = 0;
+        }
+      }
 
       if (current.depth < maxDepth) {
         for (const link of pageLinks) {
