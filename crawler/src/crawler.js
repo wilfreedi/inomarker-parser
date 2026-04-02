@@ -1103,7 +1103,12 @@ async function crawlSite(options) {
   const sitemapMaxFiles = Math.max(1, Number(process.env.CRAWLER_SITEMAP_MAX_FILES || 250));
   const sitemapMaxDepth = Math.max(1, Number(process.env.CRAWLER_SITEMAP_MAX_DEPTH || 6));
   const sitemapRequestTimeoutMs = Math.max(1000, Number(process.env.CRAWLER_SITEMAP_REQUEST_TIMEOUT_MS || 8000));
-  const sitemapDiscoveryMaxMs = Math.max(1000, Number(process.env.CRAWLER_SITEMAP_DISCOVERY_MAX_MS || 240000));
+  const sitemapDiscoveryMaxMsConfigured = Number(process.env.CRAWLER_SITEMAP_DISCOVERY_MAX_MS || 0);
+  const sitemapDiscoveryMaxMsDefault = Math.max(60_000, Math.min(240_000, Math.floor(maxDurationMs * 0.45)));
+  const sitemapDiscoveryMaxMs = Math.max(
+    30_000,
+    sitemapDiscoveryMaxMsConfigured > 0 ? sitemapDiscoveryMaxMsConfigured : sitemapDiscoveryMaxMsDefault
+  );
   const sitemapMaxUrls = Math.max(maxPages, Number(process.env.CRAWLER_SITEMAP_MAX_URLS || 50000));
   const sitemapPagePauseMs = Math.max(0, Number(process.env.CRAWLER_SITEMAP_PAGE_PAUSE_MS || 200));
   const humanOnSitemap = String(process.env.CRAWLER_HUMAN_ON_SITEMAP || "0") === "1";
@@ -1113,6 +1118,7 @@ async function crawlSite(options) {
   const extractionReserveMs = Math.max(1200, Number(process.env.CRAWLER_EXTRACTION_RESERVE_MS || 3500));
   const humanBudgetMs = Math.max(1500, Number(process.env.CRAWLER_HUMAN_BUDGET_MS || 12000));
   const dynamicBudgetMs = Math.max(1200, Number(process.env.CRAWLER_DYNAMIC_BUDGET_MS || 10000));
+  const throughputQueueThreshold = Math.max(100, Number(process.env.CRAWLER_THROUGHPUT_QUEUE_THRESHOLD || 500));
   const abortSignal = options.abortSignal || null;
   const progressCallback = options.progressCallback || null;
   const pacer = createRequestPacer({
@@ -1242,6 +1248,18 @@ async function crawlSite(options) {
         queue.push({ url: sitemapUrl, depth: 1, source: "sitemap" });
         queued.add(sitemapUrl);
       }
+      if (sitemapUrls.length > 0 && queue.length > 1 && queue[0] && queue[0].source === "seed") {
+        const seedItem = queue.shift();
+        if (seedItem) {
+          queue.push(seedItem);
+          await reportProgress(progressCallback, {
+            pagesVisited: 0,
+            currentUrl: seedItem.url,
+            event: "Seed URL перенесен в конец очереди: приоритет sitemap-URL",
+            eventLevel: "debug"
+          });
+        }
+      }
       await reportProgress(progressCallback, {
         pagesVisited: 0,
         currentUrl: "",
@@ -1357,8 +1375,9 @@ async function crawlSite(options) {
         });
 
         const allowHumanBehavior = current.source !== "sitemap" || humanOnSitemap;
+        const throughputMode = queue.length >= throughputQueueThreshold && current.source !== "sitemap";
         const remainingBeforeHumanMs = remainingMs(pageDeadlineAt);
-        if (allowHumanBehavior && remainingBeforeHumanMs > extractionReserveMs + 1200) {
+        if (allowHumanBehavior && !throughputMode && remainingBeforeHumanMs > extractionReserveMs + 1200) {
           const humanTimeBudgetMs = Math.min(humanBudgetMs, remainingBeforeHumanMs - extractionReserveMs);
           const humanDeadlineAt = Date.now() + humanTimeBudgetMs;
           await reportProgress(progressCallback, {
@@ -1380,6 +1399,13 @@ async function crawlSite(options) {
               await reportProgress(progressCallback, eventPayload);
             }
           });
+        } else if (allowHumanBehavior && throughputMode) {
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: `Эмуляция пользователя пропущена: throughput mode (queue=${queue.length})`,
+            eventLevel: "debug"
+          });
         } else if (allowHumanBehavior) {
           await reportProgress(progressCallback, {
             pagesVisited: pages.length,
@@ -1397,7 +1423,7 @@ async function crawlSite(options) {
         }
         const allowDynamicScroll = dynamicScrollEnabled && (current.source !== "sitemap" || dynamicOnSitemap);
         const remainingBeforeDynamicMs = remainingMs(pageDeadlineAt);
-        if (allowDynamicScroll && remainingBeforeDynamicMs > extractionReserveMs + 1200) {
+        if (allowDynamicScroll && !throughputMode && remainingBeforeDynamicMs > extractionReserveMs + 1200) {
           const dynamicTimeBudgetMs = Math.min(dynamicBudgetMs, remainingBeforeDynamicMs - extractionReserveMs);
           const dynamicDeadlineAt = Date.now() + dynamicTimeBudgetMs;
           await reportProgress(progressCallback, {
@@ -1418,6 +1444,13 @@ async function crawlSite(options) {
             onEvent: async (eventPayload) => {
               await reportProgress(progressCallback, eventPayload);
             }
+          });
+        } else if (allowDynamicScroll && throughputMode) {
+          await reportProgress(progressCallback, {
+            pagesVisited: pages.length,
+            currentUrl: current.url,
+            event: `Динамический добор ссылок пропущен: throughput mode (queue=${queue.length})`,
+            eventLevel: "debug"
           });
         } else if (!dynamicScrollEnabled) {
           await reportProgress(progressCallback, {

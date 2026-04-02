@@ -147,7 +147,7 @@ final class CrawlerClientTest extends TestCase
         self::assertSame(7, $decoded['maxDepth']);
         self::assertSame(44000, $decoded['timeoutMs']);
         self::assertSame(1000, $decoded['pagePauseMs']);
-        self::assertSame(115000, $decoded['maxDurationMs']);
+        self::assertSame(90000, $decoded['maxDurationMs']);
     }
 
     public function testIncludesProgressCallbackWhenConfigured(): void

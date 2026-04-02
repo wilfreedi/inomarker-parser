@@ -29,9 +29,13 @@ final class CrawlerClient
     {
         $requestTimeoutSeconds = max(30, (int) ($options['request_timeout_seconds'] ?? 300));
         $pageTimeoutMs = max(5_000, (int) ($options['timeout_ms'] ?? 30_000));
+        $clientSafetyBufferMs = max(
+            30_000,
+            min(120_000, (int) round($requestTimeoutSeconds * 1000 * 0.1))
+        );
         $maxDurationMs = max(
             $pageTimeoutMs,
-            ($requestTimeoutSeconds * 1000) - 5_000
+            ($requestTimeoutSeconds * 1000) - $clientSafetyBufferMs
         );
 
         $payloadData = [
@@ -61,8 +65,9 @@ final class CrawlerClient
         $retryDelayMs = max(100, (int) ($options['retry_delay_ms'] ?? 1500));
         $lastErrorMessage = 'Crawler request failed';
 
+        $httpTimeoutSeconds = max($requestTimeoutSeconds + 30, (int) ceil(($maxDurationMs + 15_000) / 1000));
         for ($attempt = 1; $attempt <= $attempts; $attempt++) {
-            $result = $this->performRequest($payload, $requestTimeoutSeconds);
+            $result = $this->performRequest($payload, $httpTimeoutSeconds);
             if ($result['ok']) {
                 /** @var mixed $decoded */
                 $decoded = json_decode((string) $result['body'], true, 512, JSON_THROW_ON_ERROR);
@@ -96,8 +101,9 @@ final class CrawlerClient
             CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
             CURLOPT_POSTFIELDS => $payload,
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_CONNECTTIMEOUT => 15,
             CURLOPT_TIMEOUT => max(30, $requestTimeoutSeconds),
+            CURLOPT_NOSIGNAL => true,
         ]);
         $body = curl_exec($ch);
         $curlError = curl_error($ch);
