@@ -1,0 +1,16 @@
+{
+  "name": "crawler-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Stealth crawler for parser-inomarker",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "puppeteer": "^24.6.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}

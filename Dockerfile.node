@@ -1,0 +1,21 @@
+FROM node:20-bookworm-slim@sha256:1e85773c98c31d4fe5b545e4cb17379e617b348832fb3738b22a08f68dec30f3
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends chromium ca-certificates fonts-liberation \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY crawler/package.json ./package.json
+
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+ENV CRAWLER_EXECUTABLE_PATH=/usr/bin/chromium
+
+RUN npm install --omit=dev \
+  && npm cache clean --force
+
+COPY crawler/src ./src
+
+EXPOSE 3000
+
+CMD ["node", "src/server.js"]

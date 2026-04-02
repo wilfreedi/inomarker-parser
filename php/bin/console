@@ -1,0 +1,41 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use App\Application;
+
+require dirname(__DIR__) . '/bootstrap.php';
+
+$app = Application::boot();
+$command = $argv[1] ?? '';
+
+try {
+    switch ($command) {
+        case 'migrate':
+            $app->migrate();
+            fwrite(STDOUT, "Migration completed\n");
+            break;
+        case 'worker:run':
+            $once = in_array('--once', $argv, true);
+            $app->workerService()->run($once);
+            break;
+        case 'scan:site':
+            $siteId = isset($argv[2]) ? (int) $argv[2] : 0;
+            if ($siteId <= 0) {
+                throw new InvalidArgumentException('Usage: php bin/console scan:site <site_id>');
+            }
+            $app->runScanForSite($siteId);
+            fwrite(STDOUT, "Scan completed for site {$siteId}\n");
+            break;
+        default:
+            fwrite(STDERR, "Commands:\n");
+            fwrite(STDERR, "  php bin/console migrate\n");
+            fwrite(STDERR, "  php bin/console worker:run [--once]\n");
+            fwrite(STDERR, "  php bin/console scan:site <site_id>\n");
+            exit(1);
+    }
+} catch (Throwable $exception) {
+    fwrite(STDERR, 'Error: ' . $exception->getMessage() . "\n");
+    exit(1);
+}

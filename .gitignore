@@ -1,0 +1,6 @@
+/php/vendor/
+/php/storage/*.sqlite
+/php/storage/*.sqlite-*
+/php/.phpunit.result.cache
+/crawler/node_modules/
+/.idea/

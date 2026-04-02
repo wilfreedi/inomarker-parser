@@ -1,0 +1,25 @@
+{
+  "foreign_agent": {
+    "Test Entity One": {
+      "short": "(test\\s+entity)",
+      "full": "(test\\s+entity\\s+one)"
+    }
+  },
+  "extremist": {
+    "Group B": {
+      "short": null,
+      "full": "(group\\s+b)"
+    }
+  },
+  "terrorist": {
+    "Org C": {
+      "short": "(org\\s+c)",
+      "full": null
+    }
+  },
+  "ignored_section": {
+    "Ignored": {
+      "short": "(ignored)"
+    }
+  }
+}

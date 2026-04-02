@@ -1,0 +1,37 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Tests;
+
+use App\Repository\SettingRepository;
+use PHPUnit\Framework\TestCase;
+
+final class SettingRepositoryTest extends TestCase
+{
+    public function testStoredSettingsOverrideDefaults(): void
+    {
+        $pdo = new \PDO('sqlite::memory:');
+        $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        $pdo->setAttribute(\PDO::ATTR_DEFAULT_FETCH_MODE, \PDO::FETCH_ASSOC);
+        $pdo->exec(
+            'CREATE TABLE settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )'
+        );
+
+        $repository = new SettingRepository($pdo);
+        $repository->updateMany([
+            'crawler_max_pages' => 123,
+            'crawler_page_pause_ms' => 250,
+        ]);
+
+        $all = $repository->all();
+        self::assertSame('123', $all['crawler_max_pages']);
+        self::assertSame('250', $all['crawler_page_pause_ms']);
+        self::assertSame('10', $all['crawler_max_depth']);
+    }
+}
+
