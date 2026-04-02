@@ -4,7 +4,14 @@ services:
       context: .
       dockerfile: Dockerfile.php
     working_dir: /workspace/php
-    command: php -S 0.0.0.0:8080 -t public
+    command:
+      - sh
+      - -lc
+      - |
+        if [ ! -f vendor/autoload.php ]; then
+          composer install --no-interaction --prefer-dist --no-progress
+        fi
+        php -S 0.0.0.0:8080 -t public
     environment:
       APP_ENV: dev
       APP_BASE_PATH: /workspace/php
@@ -27,7 +34,14 @@ services:
       context: .
       dockerfile: Dockerfile.php
     working_dir: /workspace/php
-    command: php bin/console worker:run
+    command:
+      - sh
+      - -lc
+      - |
+        if [ ! -f vendor/autoload.php ]; then
+          composer install --no-interaction --prefer-dist --no-progress
+        fi
+        php bin/console worker:run
     environment:
       APP_ENV: dev
       APP_BASE_PATH: /workspace/php
