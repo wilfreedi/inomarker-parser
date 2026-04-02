@@ -9,6 +9,21 @@ const USER_AGENTS = [
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
 ];
+const BLOCKED_FILE_EXTENSIONS = new Set([
+  "jpg", "jpeg", "png", "gif", "webp", "svg", "ico", "bmp", "tif", "tiff", "avif",
+  "css", "js", "mjs", "map",
+  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "zip", "rar", "7z", "tar", "gz", "bz2",
+  "mp3", "mp4", "mov", "avi", "webm", "mpeg", "wav", "ogg", "m4a",
+  "woff", "woff2", "ttf", "otf", "eot",
+  "xml", "json", "rss", "atom"
+]);
+const XML_ENTITIES = {
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&quot;": "\"",
+  "&apos;": "'"
+};
 
 function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -39,6 +54,131 @@ function normalizeUrl(url) {
 
 function isHttpUrl(url) {
   return url.protocol === "http:" || url.protocol === "https:";
+}
+
+function normalizeHost(hostname) {
+  return String(hostname || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\.+$/, "")
+    .replace(/^www\./, "");
+}
+
+function hasBlockedFileExtension(pathname) {
+  const segment = String(pathname || "").split("/").pop() || "";
+  const clean = segment.split("?")[0].split("#")[0];
+  const dotIndex = clean.lastIndexOf(".");
+  if (dotIndex <= 0 || dotIndex === clean.length - 1) {
+    return false;
+  }
+  const ext = clean.slice(dotIndex + 1).toLowerCase();
+
+  return BLOCKED_FILE_EXTENSIONS.has(ext);
+}
+
+function isSameSiteUrl(url, siteHost) {
+  if (!isHttpUrl(url)) {
+    return false;
+  }
+
+  return normalizeHost(url.hostname) === siteHost;
+}
+
+function isCrawlCandidateUrl(url, siteHost) {
+  if (!isSameSiteUrl(url, siteHost)) {
+    return false;
+  }
+  if (hasBlockedFileExtension(url.pathname)) {
+    return false;
+  }
+
+  return true;
+}
+
+function decodeXmlValue(value) {
+  const normalized = String(value || "")
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, "$1")
+    .trim();
+
+  return normalized.replace(/&(amp|lt|gt|quot|apos);/g, (entity) => XML_ENTITIES[entity] || entity);
+}
+
+function extractLocEntries(xmlBody, containerTag) {
+  const locs = [];
+  const pattern = new RegExp(`<${containerTag}\\b[\\s\\S]*?<loc\\b[^>]*>([\\s\\S]*?)<\\/loc>[\\s\\S]*?<\\/${containerTag}>`, "gi");
+  let match = pattern.exec(xmlBody);
+  while (match !== null) {
+    const value = decodeXmlValue(match[1] || "");
+    if (value !== "") {
+      locs.push(value);
+    }
+    match = pattern.exec(xmlBody);
+  }
+
+  return locs;
+}
+
+function extractGenericLocs(xmlBody) {
+  const locs = [];
+  const pattern = /<loc\b[^>]*>([\s\S]*?)<\/loc>/gi;
+  let match = pattern.exec(xmlBody);
+  while (match !== null) {
+    const value = decodeXmlValue(match[1] || "");
+    if (value !== "") {
+      locs.push(value);
+    }
+    match = pattern.exec(xmlBody);
+  }
+
+  return locs;
+}
+
+function extractSitemapDirectives(robotsTxt) {
+  const sitemapUrls = [];
+  const lines = String(robotsTxt || "").split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = rawLine.split("#")[0].trim();
+    if (line === "") {
+      continue;
+    }
+    const match = /^sitemap\s*:\s*(.+)$/i.exec(line);
+    if (match && match[1]) {
+      sitemapUrls.push(match[1].trim());
+    }
+  }
+
+  return sitemapUrls;
+}
+
+function isLikelySitemapUrl(url, siteHost) {
+  if (!isSameSiteUrl(url, siteHost)) {
+    return false;
+  }
+
+  const pathname = url.pathname.toLowerCase();
+  return pathname.endsWith(".xml") || pathname.endsWith(".xml.gz") || pathname.includes("sitemap");
+}
+
+async function fetchTextWithTimeout(url, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1000, timeoutMs));
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      return "";
+    }
+
+    return await response.text();
+  } catch (_) {
+    return "";
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function sleep(ms) {
@@ -267,18 +407,15 @@ function createRequestPacer(options) {
   };
 }
 
-function extractLinks(rawLinks, siteOrigin) {
+function extractLinks(rawLinks, baseUrl, siteHost) {
   const links = [];
   for (const href of rawLinks) {
     if (!href || typeof href !== "string") {
       continue;
     }
     try {
-      const parsed = new URL(href, siteOrigin);
-      if (!isHttpUrl(parsed)) {
-        continue;
-      }
-      if (parsed.origin !== siteOrigin) {
+      const parsed = new URL(href, baseUrl);
+      if (!isCrawlCandidateUrl(parsed, siteHost)) {
         continue;
       }
       links.push(normalizeUrl(parsed.toString()));
@@ -288,6 +425,131 @@ function extractLinks(rawLinks, siteOrigin) {
   }
 
   return links;
+}
+
+async function discoverUrlsFromSitemaps(options) {
+  const origin = options.origin;
+  const siteHost = options.siteHost;
+  const abortSignal = options.abortSignal || null;
+  const crawlDeadlineAt = Number(options.crawlDeadlineAt || Date.now() + 30_000);
+  const discoveryMaxMs = Math.max(1_000, Number(options.discoveryMaxMs || 45_000));
+  const requestTimeoutMs = Math.max(1_000, Number(options.requestTimeoutMs || 8_000));
+  const maxSitemapFiles = Math.max(1, Number(options.maxSitemapFiles || 80));
+  const maxSitemapDepth = Math.max(1, Number(options.maxSitemapDepth || 6));
+  const maxDiscoveredUrls = Math.max(1, Number(options.maxDiscoveredUrls || 50_000));
+  const discoveryDeadlineAt = Math.min(crawlDeadlineAt, Date.now() + discoveryMaxMs);
+
+  /** @type {Array<{url:string,depth:number}>} */
+  const queue = [];
+  const seenSitemaps = new Set();
+  const discovered = [];
+  const discoveredSet = new Set();
+
+  const enqueueSitemap = (sitemapUrl, depth) => {
+    if (depth > maxSitemapDepth) {
+      return;
+    }
+    let normalizedSitemapUrl = "";
+    try {
+      const parsed = new URL(sitemapUrl, origin);
+      if (!isLikelySitemapUrl(parsed, siteHost)) {
+        return;
+      }
+      normalizedSitemapUrl = normalizeUrl(parsed.toString());
+    } catch (_) {
+      return;
+    }
+    if (seenSitemaps.has(normalizedSitemapUrl)) {
+      return;
+    }
+    seenSitemaps.add(normalizedSitemapUrl);
+    queue.push({ url: normalizedSitemapUrl, depth });
+  };
+
+  const robotsUrl = new URL("/robots.txt", origin).toString();
+  const robotsText = await fetchTextWithTimeout(robotsUrl, requestTimeoutMs);
+  const sitemapCandidates = extractSitemapDirectives(robotsText);
+  if (sitemapCandidates.length === 0) {
+    enqueueSitemap(new URL("/sitemap.xml", origin).toString(), 0);
+  } else {
+    for (const sitemapUrl of sitemapCandidates) {
+      enqueueSitemap(sitemapUrl, 0);
+    }
+    enqueueSitemap(new URL("/sitemap.xml", origin).toString(), 0);
+  }
+
+  let fetchedSitemapFiles = 0;
+  while (
+    queue.length > 0
+    && fetchedSitemapFiles < maxSitemapFiles
+    && discovered.length < maxDiscoveredUrls
+  ) {
+    if ((abortSignal && abortSignal.aborted) || Date.now() >= discoveryDeadlineAt) {
+      break;
+    }
+
+    const current = queue.shift();
+    if (!current) {
+      continue;
+    }
+    if (current.depth > maxSitemapDepth) {
+      continue;
+    }
+
+    const xmlBody = await fetchTextWithTimeout(current.url, requestTimeoutMs);
+    fetchedSitemapFiles++;
+    if (xmlBody === "") {
+      continue;
+    }
+
+    const nestedSitemaps = extractLocEntries(xmlBody, "sitemap");
+    const pageLocs = extractLocEntries(xmlBody, "url");
+    const fallbackLocs = nestedSitemaps.length === 0 && pageLocs.length === 0 ? extractGenericLocs(xmlBody) : [];
+
+    for (const nestedSitemapUrl of nestedSitemaps) {
+      enqueueSitemap(nestedSitemapUrl, current.depth + 1);
+    }
+
+    const candidatePageLocs = pageLocs.length > 0 ? pageLocs : fallbackLocs;
+    for (const pageUrlRaw of candidatePageLocs) {
+      if (discovered.length >= maxDiscoveredUrls) {
+        break;
+      }
+      let normalizedPageUrl = "";
+      try {
+        const parsed = new URL(pageUrlRaw, origin);
+        if (!isCrawlCandidateUrl(parsed, siteHost)) {
+          continue;
+        }
+        normalizedPageUrl = normalizeUrl(parsed.toString());
+      } catch (_) {
+        continue;
+      }
+      if (discoveredSet.has(normalizedPageUrl)) {
+        continue;
+      }
+      discoveredSet.add(normalizedPageUrl);
+      discovered.push(normalizedPageUrl);
+    }
+
+    if (nestedSitemaps.length === 0 && pageLocs.length === 0 && fallbackLocs.length > 0) {
+      for (const genericLoc of fallbackLocs) {
+        if (queue.length >= maxSitemapFiles * 2) {
+          break;
+        }
+        try {
+          const parsed = new URL(genericLoc, origin);
+          if (isLikelySitemapUrl(parsed, siteHost)) {
+            enqueueSitemap(parsed.toString(), current.depth + 1);
+          }
+        } catch (_) {
+          continue;
+        }
+      }
+    }
+  }
+
+  return discovered;
 }
 
 async function reportProgress(progressCallback, progressPayload) {
@@ -343,6 +605,12 @@ async function crawlSite(options) {
   const dynamicScrollStableSteps = Math.max(1, Number(process.env.CRAWLER_DYNAMIC_SCROLL_STABLE_STEPS || 2));
   const dynamicScrollPauseMinMs = Math.max(100, Number(process.env.CRAWLER_DYNAMIC_SCROLL_PAUSE_MIN_MS || 500));
   const dynamicScrollPauseMaxMs = Math.max(dynamicScrollPauseMinMs, Number(process.env.CRAWLER_DYNAMIC_SCROLL_PAUSE_MAX_MS || 1200));
+  const sitemapEnabled = String(process.env.CRAWLER_SITEMAP_ENABLED || "1") !== "0";
+  const sitemapMaxFiles = Math.max(1, Number(process.env.CRAWLER_SITEMAP_MAX_FILES || 80));
+  const sitemapMaxDepth = Math.max(1, Number(process.env.CRAWLER_SITEMAP_MAX_DEPTH || 6));
+  const sitemapRequestTimeoutMs = Math.max(1000, Number(process.env.CRAWLER_SITEMAP_REQUEST_TIMEOUT_MS || 8000));
+  const sitemapDiscoveryMaxMs = Math.max(1000, Number(process.env.CRAWLER_SITEMAP_DISCOVERY_MAX_MS || 45000));
+  const sitemapMaxUrls = Math.max(maxPages, Number(process.env.CRAWLER_SITEMAP_MAX_URLS || 50000));
   const pageRecycleEvery = Math.max(0, Number(process.env.CRAWLER_PAGE_RECYCLE_EVERY || 50));
   const pagePauseMs = Math.max(0, Number(options.pagePauseMs || 1000));
   const abortSignal = options.abortSignal || null;
@@ -356,7 +624,9 @@ async function crawlSite(options) {
   const startedAt = Date.now();
   const deadlineAt = startedAt + maxDurationMs;
   const startUrl = normalizeUrl(siteUrl);
-  const origin = new URL(startUrl).origin;
+  const startParsed = new URL(startUrl);
+  const origin = startParsed.origin;
+  const siteHost = normalizeHost(startParsed.hostname);
 
   const launchOptions = {
     headless: true,
@@ -422,6 +692,28 @@ async function crawlSite(options) {
       pagesVisited: 0,
       currentUrl: startUrl
     });
+
+    if (sitemapEnabled && remainingMs(deadlineAt) > 2000) {
+      const sitemapUrls = await discoverUrlsFromSitemaps({
+        origin,
+        siteHost,
+        abortSignal,
+        crawlDeadlineAt: deadlineAt,
+        discoveryMaxMs: sitemapDiscoveryMaxMs,
+        requestTimeoutMs: sitemapRequestTimeoutMs,
+        maxSitemapFiles: sitemapMaxFiles,
+        maxSitemapDepth: sitemapMaxDepth,
+        maxDiscoveredUrls: sitemapMaxUrls
+      });
+
+      for (const sitemapUrl of sitemapUrls) {
+        if (queued.has(sitemapUrl) || visited.has(sitemapUrl)) {
+          continue;
+        }
+        queue.push({ url: sitemapUrl, depth: 1 });
+        queued.add(sitemapUrl);
+      }
+    }
 
     let shouldPauseBeforeNextRequest = false;
     while (queue.length > 0 && pages.length < maxPages) {
@@ -510,7 +802,7 @@ async function crawlSite(options) {
 
           title = payload.title || "";
           text = payload.text || "";
-          pageLinks = extractLinks(payload.links || [], origin);
+          pageLinks = extractLinks(payload.links || [], current.url, siteHost);
         }
       } catch (error) {
         pacer.markResponse(503);
