@@ -41,6 +41,12 @@ const PROGRESS_QUEUE_MAX = Math.max(
   10,
   Number(process.env.CRAWLER_PROGRESS_QUEUE_MAX || 200)
 );
+const DEFAULT_BLOCKED_RESOURCE_TYPES = new Set([
+  "image",
+  "media",
+  "font",
+  "stylesheet"
+]);
 const progressDebugLastSentByRun = new Map();
 const progressQueueByRun = new Map();
 
@@ -58,6 +64,19 @@ function errorToMessage(error) {
   }
 
   return String(error || "unknown_error");
+}
+
+function parseCsvSet(rawValue, fallback = null) {
+  if (rawValue === undefined || rawValue === null) {
+    return fallback ? new Set(fallback) : new Set();
+  }
+
+  const items = String(rawValue)
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter((value) => value !== "");
+
+  return new Set(items);
 }
 
 function detectPlatform(userAgent) {
@@ -129,6 +148,40 @@ function isCrawlCandidateUrl(url, siteHost) {
   }
 
   return true;
+}
+
+function createResourcePolicy(siteHost) {
+  const rawBlockedTypes = process.env.CRAWLER_BLOCK_RESOURCE_TYPES;
+  const blockedResourceTypes = parseCsvSet(rawBlockedTypes, DEFAULT_BLOCKED_RESOURCE_TYPES);
+
+  return {
+    enabled: String(process.env.CRAWLER_RESOURCE_BLOCKING_ENABLED || "1") !== "0",
+    blockThirdPartyAssets: String(process.env.CRAWLER_BLOCK_THIRD_PARTY_ASSETS || "0") === "1",
+    blockedResourceTypes,
+    siteHost
+  };
+}
+
+function shouldAbortRequest(request, resourcePolicy) {
+  const resourceType = String(request.resourceType() || "").toLowerCase();
+  if (resourcePolicy.blockedResourceTypes.has(resourceType)) {
+    return true;
+  }
+
+  if (!resourcePolicy.blockThirdPartyAssets || resourceType === "document") {
+    return false;
+  }
+
+  try {
+    const url = new URL(request.url());
+    if (!isHttpUrl(url)) {
+      return false;
+    }
+
+    return !isSameSiteUrl(url, resourcePolicy.siteHost);
+  } catch (_) {
+    return false;
+  }
 }
 
 function decodeXmlValue(value) {
@@ -762,10 +815,28 @@ async function applySessionProfile(page, profile) {
   });
 }
 
+async function applyResourcePolicy(page, resourcePolicy) {
+  if (!resourcePolicy.enabled) {
+    return;
+  }
+  await page.setRequestInterception(true);
+  page.on("request", (request) => {
+    if (typeof request.isInterceptResolutionHandled === "function" && request.isInterceptResolutionHandled()) {
+      return;
+    }
+    if (shouldAbortRequest(request, resourcePolicy)) {
+      request.abort("blockedbyclient").catch(() => undefined);
+      return;
+    }
+    request.continue().catch(() => undefined);
+  });
+}
+
 async function applyRuntimeProtections(page, profile, popupHandler) {
   page.setDefaultNavigationTimeout(profile.timeoutMs);
   page.setDefaultTimeout(profile.timeoutMs);
   await applySessionProfile(page, profile.session);
+  await applyResourcePolicy(page, profile.resourcePolicy);
   await page.evaluateOnNewDocument((runtimeProfile) => {
     Object.defineProperty(navigator, "webdriver", { get: () => undefined });
     Object.defineProperty(navigator, "platform", { get: () => runtimeProfile.platform });
@@ -1332,10 +1403,11 @@ async function crawlSite(options) {
   const humanBudgetMs = Math.max(1500, Number(process.env.CRAWLER_HUMAN_BUDGET_MS || 12000));
   const dynamicBudgetMs = Math.max(1200, Number(process.env.CRAWLER_DYNAMIC_BUDGET_MS || 10000));
   const throughputQueueThreshold = Math.max(100, Number(process.env.CRAWLER_THROUGHPUT_QUEUE_THRESHOLD || 500));
+  const minRequestIntervalMs = Math.max(0, Number(process.env.CRAWLER_MIN_REQUEST_INTERVAL_MS || 0));
   const abortSignal = options.abortSignal || null;
   const progressCallback = options.progressCallback || null;
   const pacer = createRequestPacer({
-    minIntervalMs: 0,
+    minIntervalMs: minRequestIntervalMs,
     jitterMinMs: Number(process.env.CRAWLER_DELAY_MIN_MS || 0),
     jitterMaxMs: Number(process.env.CRAWLER_DELAY_MAX_MS || 0),
     maxBackoffMs: Number(process.env.CRAWLER_MAX_BACKOFF_MS || 30000)
@@ -1346,6 +1418,7 @@ async function crawlSite(options) {
   const startParsed = new URL(startUrl);
   const origin = startParsed.origin;
   const siteHost = normalizeHost(startParsed.hostname);
+  const resourcePolicy = createResourcePolicy(siteHost);
 
   const launchOptions = {
     headless: true,
@@ -1370,7 +1443,8 @@ async function crawlSite(options) {
   };
   const pageProfile = {
     timeoutMs,
-    session: sessionProfile
+    session: sessionProfile,
+    resourcePolicy
   };
   const createGuardedPage = async () => {
     const nextPage = await context.newPage();
@@ -1434,7 +1508,7 @@ async function crawlSite(options) {
     await reportProgress(progressCallback, {
       pagesVisited: 0,
       currentUrl: startUrl,
-      event: `Конфиг обхода: maxPages=${maxPages}, maxDepth=${maxDepth}, pagePauseMs=${pagePauseMs}, timeoutMs=${timeoutMs}, pageMaxMs=${pageMaxMs}, maxDurationMs=${maxDurationMs}, sitemapEnabled=${sitemapEnabled ? "1" : "0"}, dynamicScroll=${dynamicScrollEnabled ? "1" : "0"}, humanBehavior=${humanBehaviorEnabled ? "1" : "0"}, sitemapDiscoveryMaxMs=${sitemapDiscoveryMaxMs}, sitemapMaxFiles=${sitemapMaxFiles}, sitemapMaxUrls=${sitemapMaxUrls}`,
+      event: `Конфиг обхода: maxPages=${maxPages}, maxDepth=${maxDepth}, pagePauseMs=${pagePauseMs}, timeoutMs=${timeoutMs}, pageMaxMs=${pageMaxMs}, maxDurationMs=${maxDurationMs}, minRequestIntervalMs=${minRequestIntervalMs}, resourceBlocking=${resourcePolicy.enabled ? "1" : "0"}, blockedTypes=${resourcePolicy.blockedResourceTypes.size}, blockThirdPartyAssets=${resourcePolicy.blockThirdPartyAssets ? "1" : "0"}, sitemapEnabled=${sitemapEnabled ? "1" : "0"}, dynamicScroll=${dynamicScrollEnabled ? "1" : "0"}, humanBehavior=${humanBehaviorEnabled ? "1" : "0"}, sitemapDiscoveryMaxMs=${sitemapDiscoveryMaxMs}, sitemapMaxFiles=${sitemapMaxFiles}, sitemapMaxUrls=${sitemapMaxUrls}`,
       eventLevel: "debug"
     });
 

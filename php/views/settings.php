@@ -23,7 +23,7 @@ declare(strict_types=1);
             </label>
             <label>
                 Параллельных сканов (1-3)
-                <input type="number" min="1" max="3" name="worker_parallel_sites" value="<?= (int) ($settings['worker_parallel_sites'] ?? 3) ?>">
+                <input type="number" min="1" max="3" name="worker_parallel_sites" value="<?= (int) ($settings['worker_parallel_sites'] ?? 1) ?>">
             </label>
             <label>
                 Интервал автоскана (минуты)

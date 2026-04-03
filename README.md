@@ -70,3 +70,11 @@ composer test
 - Используется `puppeteer-extra-plugin-stealth`.
 - Рандомизируются `user-agent`, viewport и задержки между страницами.
 - Скрываются типовые automation-признаки (`navigator.webdriver` и related fingerprints).
+
+## Нагрузка на CPU (особенно для 1 ядра)
+- В `Settings` выставьте `Параллельных сканов` = `1`.
+- Увеличьте `Пауза между переходами страниц (мс)` до `1500-3000`.
+- В `docker-compose` можно усилить щадящий режим через:
+  - `CRAWLER_DYNAMIC_SCROLL_ENABLED=0`
+  - `CRAWLER_RESOURCE_BLOCKING_ENABLED=1`
+  - `CRAWLER_BLOCK_RESOURCE_TYPES=image,media,font,stylesheet`

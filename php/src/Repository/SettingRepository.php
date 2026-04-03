@@ -11,7 +11,7 @@ final class SettingRepository
     /** @var array<string, string> */
     private const DEFAULTS = [
         'worker_batch_size' => '3',
-        'worker_parallel_sites' => '3',
+        'worker_parallel_sites' => '1',
         'scan_interval_minutes' => '360',
         'worker_stale_run_minutes' => '5',
         'crawler_max_pages' => '10000',
