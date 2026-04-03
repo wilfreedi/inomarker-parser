@@ -32,7 +32,10 @@ declare(strict_types=1);
             </thead>
             <tbody>
             <?php foreach ($sites as $site): ?>
-                <tr data-live-site-row="<?= (int) $site['id'] ?>">
+                <tr
+                    data-live-site-row="<?= (int) $site['id'] ?>"
+                    data-live-status="<?= htmlspecialchars((string) ($site['status'] ?? 'idle'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>"
+                >
                     <td><?= (int) $site['id'] ?></td>
                     <td>
                         <a class="subtle-link" href="/sites/<?= (int) $site['id'] ?>">
@@ -70,6 +73,18 @@ declare(strict_types=1);
     if (rows.length === 0) {
         return;
     }
+    let pollInFlight = false;
+    const rowsById = new Map();
+    for (const row of rows) {
+        const siteId = Number(row.getAttribute('data-live-site-row') || 0);
+        if (siteId > 0) {
+            rowsById.set(siteId, row);
+        }
+    }
+    if (rowsById.size === 0) {
+        return;
+    }
+    const endpoint = `/api/sites/live?ids=${encodeURIComponent(Array.from(rowsById.keys()).join(','))}`;
 
     const statusLabels = {
         idle: 'Готов',
@@ -113,13 +128,36 @@ declare(strict_types=1);
         ].join('');
     };
 
-    const tickRow = async (row) => {
-        const siteId = Number(row.getAttribute('data-live-site-row') || 0);
-        if (siteId <= 0) {
+    const applyRowState = (row, site) => {
+        const status = String(site.status || 'idle');
+        const fingerprint = [
+            status,
+            String(site.progress_pages || 0),
+            String(site.progress_current_url || ''),
+            String(site.progress_updated_at || '')
+        ].join('|');
+        if (row.dataset.liveFingerprint === fingerprint) {
             return;
         }
+        row.dataset.liveFingerprint = fingerprint;
+        row.dataset.liveStatus = status;
+        const statusCell = row.querySelector('.js-live-status');
+        const progressCell = row.querySelector('.js-live-progress');
+        if (statusCell) {
+            statusCell.innerHTML = renderStatus(status);
+        }
+        if (progressCell) {
+            progressCell.innerHTML = renderProgress(site);
+        }
+    };
+
+    const tickAll = async () => {
+        if (document.hidden || pollInFlight) {
+            return;
+        }
+        pollInFlight = true;
         try {
-            const response = await fetch(`/api/sites/${siteId}/live`, {
+            const response = await fetch(endpoint, {
                 method: 'GET',
                 headers: { Accept: 'application/json' },
                 cache: 'no-store'
@@ -128,26 +166,28 @@ declare(strict_types=1);
                 return;
             }
             const payload = await response.json();
-            if (!payload || payload.ok !== true || !payload.site) {
+            if (!payload || payload.ok !== true || !Array.isArray(payload.sites)) {
                 return;
             }
-            const statusCell = row.querySelector('.js-live-status');
-            const progressCell = row.querySelector('.js-live-progress');
-            if (statusCell) {
-                statusCell.innerHTML = renderStatus(String(payload.site.status || 'idle'));
+            for (const site of payload.sites) {
+                const siteId = Number(site?.id || 0);
+                if (siteId <= 0) {
+                    continue;
+                }
+                const row = rowsById.get(siteId);
+                if (!row) {
+                    continue;
+                }
+                applyRowState(row, site);
             }
-            if (progressCell) {
-                progressCell.innerHTML = renderProgress(payload.site);
-            }
-        } catch (_) {
-            // Ignore polling errors.
+        } finally {
+            pollInFlight = false;
         }
     };
 
-    const tickAll = () => Promise.all(rows.map((row) => tickRow(row)));
     void tickAll();
     setInterval(() => {
         void tickAll();
-    }, 3000);
+    }, 6000);
 })();
 </script>

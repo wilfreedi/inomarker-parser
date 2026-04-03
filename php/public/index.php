@@ -105,8 +105,14 @@ if ($method === 'POST' && $path === '/internal/crawl-progress') {
     $controller->ingestCrawlProgress(is_string($rawBody) ? $rawBody : '', $_SERVER);
 }
 
+if ($method === 'GET' && $path === '/api/sites/live') {
+    $controller->sitesLive($_GET);
+}
+
 if ($method === 'GET' && preg_match('#^/api/sites/(\d+)/live$#', $path, $matches) === 1) {
-    $controller->siteLive((int) $matches[1]);
+    $detailsRaw = isset($_GET['details']) ? mb_strtolower(trim((string) $_GET['details'])) : '';
+    $withDetails = in_array($detailsRaw, ['1', 'true', 'yes', 'on'], true);
+    $controller->siteLive((int) $matches[1], $withDetails);
 }
 
 http_response_code(404);

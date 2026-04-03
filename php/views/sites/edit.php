@@ -63,12 +63,14 @@ $siteStatus = (string) ($site['status'] ?? 'idle');
 <script>
 (() => {
     const siteId = <?= $siteId ?>;
-    const endpoint = `/api/sites/${siteId}/live`;
+    const endpoint = `/api/sites/${siteId}/live?details=0`;
     const statusNode = document.getElementById('live-status-badge');
     const progressNode = document.getElementById('live-progress-box');
     if (!statusNode || !progressNode) {
         return;
     }
+    let pollInFlight = false;
+    let polling = null;
 
     const statusLabels = {
         idle: 'Готов',
@@ -113,6 +115,10 @@ $siteStatus = (string) ($site['status'] ?? 'idle');
     };
 
     const tick = async () => {
+        if (document.hidden || pollInFlight) {
+            return;
+        }
+        pollInFlight = true;
         try {
             const response = await fetch(endpoint, {
                 method: 'GET',
@@ -126,16 +132,23 @@ $siteStatus = (string) ($site['status'] ?? 'idle');
             if (!payload || payload.ok !== true || !payload.site) {
                 return;
             }
-            statusNode.innerHTML = renderStatus(String(payload.site.status || 'idle'));
+            const status = String(payload.site.status || 'idle');
+            statusNode.innerHTML = renderStatus(status);
             progressNode.innerHTML = renderProgress(payload.site);
+            if (status !== 'running' && status !== 'cancel_requested' && polling !== null) {
+                clearInterval(polling);
+                polling = null;
+            }
         } catch (_) {
             // Ignore polling errors.
+        } finally {
+            pollInFlight = false;
         }
     };
 
     void tick();
-    setInterval(() => {
+    polling = setInterval(() => {
         void tick();
-    }, 2500);
+    }, 5000);
 })();
 </script>

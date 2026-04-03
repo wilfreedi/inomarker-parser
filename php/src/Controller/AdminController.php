@@ -302,17 +302,14 @@ final class AdminController
         $this->respondJson(200, ['ok' => true]);
     }
 
-    public function siteLive(int $siteId): void
+    public function siteLive(int $siteId, bool $withDetails = false): void
     {
         $site = $this->siteRepository->findById($siteId);
         if ($site === null) {
             $this->respondJson(404, ['ok' => false, 'error' => 'site_not_found']);
         }
 
-        $recentPages = $this->pageRepository->recentBySite($siteId, 25);
-        $liveRecentUrls = $this->siteRepository->recentProgressUrls($siteId, 25);
-        $liveLogs = $this->siteRepository->progressLogs($siteId, 200);
-        $this->respondJson(200, [
+        $basePayload = [
             'ok' => true,
             'site' => [
                 'id' => (int) $site['id'],
@@ -323,6 +320,15 @@ final class AdminController
                 'last_error' => (string) ($site['last_error'] ?? ''),
                 'last_crawled_at' => (string) ($site['last_crawled_at'] ?? ''),
             ],
+        ];
+        if (!$withDetails) {
+            $this->respondJson(200, $basePayload);
+        }
+
+        $recentPages = $this->pageRepository->recentBySite($siteId, 12);
+        $liveRecentUrls = $this->siteRepository->recentProgressUrls($siteId, 12);
+        $liveLogs = $this->siteRepository->progressLogs($siteId, 80);
+        $this->respondJson(200, $basePayload + [
             'live_logs' => $liveLogs,
             'recent_pages' => array_map(
                 static function (array $page): array {
@@ -351,6 +357,42 @@ final class AdminController
                 $recentPages
             ),
             'live_recent_urls' => $liveRecentUrls,
+        ]);
+    }
+
+    /** @param array<string, mixed> $query */
+    public function sitesLive(array $query): void
+    {
+        $rawIds = trim((string) ($query['ids'] ?? ''));
+        if ($rawIds === '') {
+            $this->respondJson(422, ['ok' => false, 'error' => 'missing_ids']);
+        }
+
+        $tokens = preg_split('/[,\s]+/', $rawIds) ?: [];
+        $siteIds = [];
+        foreach ($tokens as $token) {
+            $id = (int) $token;
+            if ($id > 0) {
+                $siteIds[] = $id;
+            }
+        }
+        $siteIds = array_values(array_unique($siteIds));
+        if ($siteIds === []) {
+            $this->respondJson(422, ['ok' => false, 'error' => 'invalid_ids']);
+        }
+        $siteIds = array_slice($siteIds, 0, 200);
+
+        $states = $this->siteRepository->liveStatesByIds($siteIds);
+        $sites = [];
+        foreach ($siteIds as $siteId) {
+            if (isset($states[$siteId])) {
+                $sites[] = $states[$siteId];
+            }
+        }
+
+        $this->respondJson(200, [
+            'ok' => true,
+            'sites' => $sites,
         ]);
     }
 

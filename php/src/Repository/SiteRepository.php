@@ -27,9 +27,58 @@ final class SiteRepository
     /** @return array<int, array<string, mixed>> */
     public function all(): array
     {
-        $stmt = $this->pdo->query('SELECT * FROM sites ORDER BY created_at DESC');
+        $stmt = $this->pdo->query(
+            'SELECT id, name, base_url, is_enabled, status, scan_requested_at, last_crawled_at, last_error,
+                    progress_pages, progress_current_url, progress_recent_urls, progress_updated_at, created_at, updated_at
+             FROM sites
+             ORDER BY created_at DESC'
+        );
 
         return $stmt->fetchAll();
+    }
+
+    /**
+     * @param array<int, int> $siteIds
+     * @return array<int, array<string, mixed>>
+     */
+    public function liveStatesByIds(array $siteIds): array
+    {
+        $siteIds = array_values(array_unique(array_map(static fn (int $id): int => max(0, $id), $siteIds)));
+        $siteIds = array_values(array_filter($siteIds, static fn (int $id): bool => $id > 0));
+        if ($siteIds === []) {
+            return [];
+        }
+
+        $placeholders = implode(', ', array_fill(0, count($siteIds), '?'));
+        $stmt = $this->pdo->prepare(
+            "SELECT id, status, progress_pages, progress_current_url, progress_updated_at, last_error, last_crawled_at
+             FROM sites
+             WHERE id IN ({$placeholders})"
+        );
+        foreach ($siteIds as $index => $siteId) {
+            $stmt->bindValue($index + 1, $siteId, PDO::PARAM_INT);
+        }
+        $stmt->execute();
+
+        $rows = $stmt->fetchAll();
+        $byId = [];
+        foreach ($rows as $row) {
+            $id = (int) ($row['id'] ?? 0);
+            if ($id <= 0) {
+                continue;
+            }
+            $byId[$id] = [
+                'id' => $id,
+                'status' => (string) ($row['status'] ?? 'idle'),
+                'progress_pages' => (int) ($row['progress_pages'] ?? 0),
+                'progress_current_url' => (string) ($row['progress_current_url'] ?? ''),
+                'progress_updated_at' => (string) ($row['progress_updated_at'] ?? ''),
+                'last_error' => (string) ($row['last_error'] ?? ''),
+                'last_crawled_at' => (string) ($row['last_crawled_at'] ?? ''),
+            ];
+        }
+
+        return $byId;
     }
 
     public function create(string $name, string $baseUrl): void

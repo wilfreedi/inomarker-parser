@@ -56,6 +56,9 @@ if (!empty($site['progress_log']) && is_string($site['progress_log'])) {
         $decodedLogs = [];
     }
     if (is_array($decodedLogs)) {
+        if (count($decodedLogs) > 120) {
+            $decodedLogs = array_slice($decodedLogs, -120);
+        }
         foreach ($decodedLogs as $item) {
             if (!is_array($item)) {
                 continue;
@@ -342,13 +345,14 @@ if (!empty($site['progress_log']) && is_string($site['progress_log'])) {
 (() => {
     const siteId = <?= $siteId ?>;
     const currentPagesPage = <?= (int) ($pagesPagination['current_page'] ?? 1) ?>;
-    const endpoint = `/api/sites/${siteId}/live`;
+    const endpoint = `/api/sites/${siteId}/live?details=1`;
     const statusNode = document.getElementById('live-status-badge');
     const progressNode = document.getElementById('live-progress-box');
     const recentPagesBody = document.getElementById('live-recent-pages-body');
     const logConsole = document.getElementById('live-log-console');
     const logBody = document.getElementById('live-log-body');
     let lastLogsFingerprint = '';
+    let pollInFlight = false;
     if (!statusNode || !progressNode || !recentPagesBody) {
         return;
     }
@@ -510,6 +514,10 @@ if (!empty($site['progress_log']) && is_string($site['progress_log'])) {
 
     let polling = null;
     const tick = async () => {
+        if (document.hidden || pollInFlight) {
+            return;
+        }
+        pollInFlight = true;
         try {
             const response = await fetch(endpoint, {
                 method: 'GET',
@@ -530,10 +538,12 @@ if (!empty($site['progress_log']) && is_string($site['progress_log'])) {
             }
         } catch (_) {
             // Keep last rendered state if polling failed.
+        } finally {
+            pollInFlight = false;
         }
     };
 
     void tick();
-    polling = setInterval(tick, 3500);
+    polling = setInterval(tick, 5000);
 })();
 </script>
