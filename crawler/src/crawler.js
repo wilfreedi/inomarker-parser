@@ -49,14 +49,14 @@ const PROGRESS_LEVEL_WEIGHTS = {
   off: 100
 };
 const PROGRESS_MIN_LEVEL = (() => {
-  const rawLevel = String(process.env.CRAWLER_PROGRESS_MIN_LEVEL || "debug")
+  const rawLevel = String(process.env.CRAWLER_PROGRESS_MIN_LEVEL || "info")
     .trim()
     .toLowerCase();
   if (Object.prototype.hasOwnProperty.call(PROGRESS_LEVEL_WEIGHTS, rawLevel)) {
     return rawLevel;
   }
 
-  return "debug";
+  return "info";
 })();
 const DEFAULT_BLOCKED_RESOURCE_TYPES = new Set([
   "image",
@@ -1419,7 +1419,7 @@ async function crawlSite(options) {
   const dynamicScrollStableSteps = Math.max(1, Number(process.env.CRAWLER_DYNAMIC_SCROLL_STABLE_STEPS || 2));
   const dynamicScrollPauseMinMs = Math.max(100, Number(process.env.CRAWLER_DYNAMIC_SCROLL_PAUSE_MIN_MS || 500));
   const dynamicScrollPauseMaxMs = Math.max(dynamicScrollPauseMinMs, Number(process.env.CRAWLER_DYNAMIC_SCROLL_PAUSE_MAX_MS || 1200));
-  const sitemapEnabled = false;
+  const sitemapEnabled = String(process.env.CRAWLER_SITEMAP_ENABLED || "1") !== "0";
   const sitemapMaxFilesDefault = Math.max(250, Math.min(2000, Math.ceil(maxPages / 30)));
   const sitemapMaxFiles = Math.max(1, Number(process.env.CRAWLER_SITEMAP_MAX_FILES || sitemapMaxFilesDefault));
   const sitemapMaxDepth = Math.max(1, Number(process.env.CRAWLER_SITEMAP_MAX_DEPTH || 6));

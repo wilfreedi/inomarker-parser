@@ -20,7 +20,7 @@ services:
       CRAWLER_ENDPOINT: http://crawler:3000/crawl
       CRAWLER_PROGRESS_ENDPOINT: http://app:8080/internal/crawl-progress
       CRAWLER_PROGRESS_TOKEN: dev-progress-token
-      SITE_PROGRESS_MIN_LEVEL: warn
+      SITE_PROGRESS_MIN_LEVEL: info
       WORKER_IDLE_SLEEP_SECONDS: 20
     ports:
       - "8080:8080"
@@ -51,7 +51,7 @@ services:
       CRAWLER_ENDPOINT: http://crawler:3000/crawl
       CRAWLER_PROGRESS_ENDPOINT: http://app:8080/internal/crawl-progress
       CRAWLER_PROGRESS_TOKEN: dev-progress-token
-      SITE_PROGRESS_MIN_LEVEL: warn
+      SITE_PROGRESS_MIN_LEVEL: info
       WORKER_IDLE_SLEEP_SECONDS: 20
     volumes:
       - .:/workspace
@@ -72,7 +72,7 @@ services:
       CRAWLER_RESOURCE_BLOCKING_ENABLED: 1
       CRAWLER_BLOCK_RESOURCE_TYPES: image,media,font,stylesheet
       CRAWLER_BLOCK_THIRD_PARTY_ASSETS: 0
-      CRAWLER_PROGRESS_MIN_LEVEL: warn
+      CRAWLER_PROGRESS_MIN_LEVEL: info
       CRAWLER_MAX_BACKOFF_MS: 30000
       CRAWLER_PAGE_MAX_MS: 45000
       CRAWLER_PAGE_RECYCLE_EVERY: 60
