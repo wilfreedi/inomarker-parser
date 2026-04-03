@@ -41,6 +41,23 @@ const PROGRESS_QUEUE_MAX = Math.max(
   10,
   Number(process.env.CRAWLER_PROGRESS_QUEUE_MAX || 200)
 );
+const PROGRESS_LEVEL_WEIGHTS = {
+  debug: 10,
+  info: 20,
+  warn: 30,
+  error: 40,
+  off: 100
+};
+const PROGRESS_MIN_LEVEL = (() => {
+  const rawLevel = String(process.env.CRAWLER_PROGRESS_MIN_LEVEL || "debug")
+    .trim()
+    .toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(PROGRESS_LEVEL_WEIGHTS, rawLevel)) {
+    return rawLevel;
+  }
+
+  return "debug";
+})();
 const DEFAULT_BLOCKED_RESOURCE_TYPES = new Set([
   "image",
   "media",
@@ -64,6 +81,23 @@ function errorToMessage(error) {
   }
 
   return String(error || "unknown_error");
+}
+
+function normalizeProgressLevel(level) {
+  const normalized = String(level || "info").trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(PROGRESS_LEVEL_WEIGHTS, normalized) || normalized === "off") {
+    return "info";
+  }
+
+  return normalized;
+}
+
+function shouldSendProgressLevel(level) {
+  const normalized = normalizeProgressLevel(level);
+  const minLevelWeight = PROGRESS_LEVEL_WEIGHTS[PROGRESS_MIN_LEVEL] ?? PROGRESS_LEVEL_WEIGHTS.debug;
+  const levelWeight = PROGRESS_LEVEL_WEIGHTS[normalized] ?? PROGRESS_LEVEL_WEIGHTS.info;
+
+  return levelWeight >= minLevelWeight;
 }
 
 function parseCsvSet(rawValue, fallback = null) {
@@ -1331,8 +1365,14 @@ function reportProgress(progressCallback, progressPayload) {
     return;
   }
 
-  const eventLevelRaw = String(progressPayload.eventLevel || "info").trim().toLowerCase();
-  const eventLevel = ["info", "warn", "error", "debug"].includes(eventLevelRaw) ? eventLevelRaw : "info";
+  const eventLevel = normalizeProgressLevel(progressPayload.eventLevel);
+  if (!shouldSendProgressLevel(eventLevel)) {
+    return;
+  }
+  const eventMessage = String(progressPayload.event || "").trim();
+  if (eventMessage === "") {
+    return;
+  }
   if (eventLevel === "debug" && PROGRESS_DEBUG_MIN_INTERVAL_MS > 0) {
     const runKey = progressRunKey(progressCallback);
     const now = Date.now();
@@ -1353,7 +1393,7 @@ function reportProgress(progressCallback, progressPayload) {
     runId: Number(progressCallback.runId || 0),
     pagesVisited: Number(progressPayload.pagesVisited || 0),
     currentUrl: progressPayload.currentUrl || "",
-    event: String(progressPayload.event || "").trim(),
+    event: eventMessage,
     eventLevel
   });
 }

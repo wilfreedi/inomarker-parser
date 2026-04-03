@@ -10,6 +10,15 @@ final class SiteRepository
 {
     private const PROGRESS_RECENT_URLS_LIMIT = 25;
     private const PROGRESS_LOG_LIMIT = 600;
+    /** @var array<string, int> */
+    private const LOG_LEVEL_WEIGHTS = [
+        'debug' => 10,
+        'info' => 20,
+        'warn' => 30,
+        'error' => 40,
+        'off' => 100,
+    ];
+    private ?string $progressMinLevel = null;
 
     public function __construct(private readonly PDO $pdo)
     {
@@ -636,6 +645,10 @@ final class SiteRepository
         }
 
         $normalizedLevel = $this->normalizeLogLevel($level);
+        if (!$this->shouldStoreLogLevel($normalizedLevel)) {
+            return null;
+        }
+
         return [
             'at' => $this->now(),
             'level' => $normalizedLevel,
@@ -695,5 +708,33 @@ final class SiteRepository
         }
 
         return $level;
+    }
+
+    private function shouldStoreLogLevel(string $level): bool
+    {
+        $minLevel = $this->progressMinLogLevel();
+        $minWeight = self::LOG_LEVEL_WEIGHTS[$minLevel] ?? self::LOG_LEVEL_WEIGHTS['debug'];
+        $levelWeight = self::LOG_LEVEL_WEIGHTS[$level] ?? self::LOG_LEVEL_WEIGHTS['info'];
+
+        return $levelWeight >= $minWeight;
+    }
+
+    private function progressMinLogLevel(): string
+    {
+        if ($this->progressMinLevel !== null) {
+            return $this->progressMinLevel;
+        }
+
+        $raw = getenv('SITE_PROGRESS_MIN_LEVEL');
+        $level = is_string($raw) ? trim(mb_strtolower($raw)) : '';
+        if (!array_key_exists($level, self::LOG_LEVEL_WEIGHTS)) {
+            $this->progressMinLevel = 'debug';
+
+            return $this->progressMinLevel;
+        }
+
+        $this->progressMinLevel = $level;
+
+        return $this->progressMinLevel;
     }
 }
