@@ -985,6 +985,128 @@ async function extractPagePayload(page, pageUrl, siteHost, timeoutMs) {
   };
 }
 
+async function readPageChallengeSnapshot(page) {
+  const snapshot = await page.evaluate(() => {
+    const bodyText = document.body ? String(document.body.innerText || document.body.textContent || "") : "";
+    const html = document.documentElement ? String(document.documentElement.outerHTML || "") : "";
+
+    return {
+      locationHref: String(window.location.href || ""),
+      linksCount: document.querySelectorAll("a[href]").length,
+      bodyPreview: bodyText.slice(0, 8000),
+      htmlPreview: html.slice(0, 12000)
+    };
+  }).catch(() => null);
+  if (snapshot === null) {
+    return null;
+  }
+
+  const challengeProbe = `${snapshot.bodyPreview}\n${snapshot.htmlPreview}`;
+
+  return {
+    locationHref: String(snapshot.locationHref || ""),
+    linksCount: Math.max(0, Number(snapshot.linksCount || 0)),
+    challengeDetected: looksLikeJsChallengeBody(challengeProbe)
+  };
+}
+
+async function waitForJsChallengeClearance(page, options) {
+  const deadlineAt = Number(options.deadlineAt || Date.now());
+  const abortSignal = options.abortSignal || null;
+  const maxWaitMs = Math.max(0, Number(options.maxWaitMs || 0));
+  const currentUrl = String(options.currentUrl || "");
+  const pagesVisited = Math.max(0, Number(options.pagesVisited || 0));
+  const onEvent = typeof options.onEvent === "function" ? options.onEvent : null;
+
+  let snapshot = await readPageChallengeSnapshot(page);
+  if (snapshot === null || !snapshot.challengeDetected) {
+    return {
+      challengeDetected: snapshot !== null && snapshot.challengeDetected,
+      resolved: snapshot !== null
+    };
+  }
+
+  if (maxWaitMs <= 0) {
+    if (onEvent) {
+      await onEvent({
+        pagesVisited,
+        currentUrl,
+        event: "Обнаружен JS challenge, но отсутствует бюджет ожидания для его прохождения",
+        eventLevel: "warn"
+      });
+    }
+
+    return {
+      challengeDetected: true,
+      resolved: false
+    };
+  }
+
+  const waitDeadlineAt = Math.min(deadlineAt, Date.now() + maxWaitMs);
+  const initialLocationHref = snapshot.locationHref;
+  if (onEvent) {
+    await onEvent({
+      pagesVisited,
+      currentUrl,
+      event: `Обнаружен JS challenge, ожидание прохождения до ${maxWaitMs}мс`,
+      eventLevel: "warn"
+    });
+  }
+
+  while (Date.now() < waitDeadlineAt) {
+    if (abortSignal && abortSignal.aborted) {
+      break;
+    }
+
+    const remainingWaitMs = waitDeadlineAt - Date.now();
+    if (remainingWaitMs <= 0) {
+      break;
+    }
+
+    const navigationTimeoutMs = Math.min(3_000, Math.max(900, remainingWaitMs));
+    await Promise.race([
+      page.waitForNavigation({
+        waitUntil: "domcontentloaded",
+        timeout: navigationTimeoutMs
+      }).catch(() => undefined),
+      sleep(Math.min(1_200, Math.max(450, remainingWaitMs)))
+    ]);
+
+    snapshot = await readPageChallengeSnapshot(page);
+    if (snapshot !== null && !snapshot.challengeDetected) {
+      if (onEvent) {
+        const urlChanged = snapshot.locationHref !== initialLocationHref;
+        await onEvent({
+          pagesVisited,
+          currentUrl,
+          event: `JS challenge пройден: urlChanged=${urlChanged ? "yes" : "no"}, links=${snapshot.linksCount}`,
+          eventLevel: "info"
+        });
+      }
+
+      return {
+        challengeDetected: false,
+        resolved: true
+      };
+    }
+  }
+
+  if (onEvent) {
+    const finalLinksCount = snapshot ? snapshot.linksCount : 0;
+    await onEvent({
+      pagesVisited,
+      currentUrl,
+      event: `JS challenge не пройден в отведенное время, продолжаем извлечение как есть (links=${finalLinksCount})`,
+      eventLevel: "warn"
+    });
+  }
+
+  return {
+    challengeDetected: true,
+    resolved: false
+  };
+}
+
 async function discoverUrlsFromSitemaps(options) {
   const origin = options.origin;
   const siteHost = options.siteHost;
@@ -1699,6 +1821,20 @@ async function crawlSite(options) {
           currentUrl: current.url,
           event: `Навигация завершена: status=${status ?? "n/a"}, elapsed=${navigationElapsedMs}мс`,
           eventLevel: status !== null && status >= 400 ? "warn" : "debug"
+        });
+        const remainingBeforeChallengeMs = remainingMs(pageDeadlineAt);
+        const challengeWaitBudgetMs = remainingBeforeChallengeMs > extractionReserveMs + 1200
+          ? Math.min(12_000, remainingBeforeChallengeMs - extractionReserveMs)
+          : 0;
+        await waitForJsChallengeClearance(page, {
+          deadlineAt: pageDeadlineAt,
+          abortSignal,
+          maxWaitMs: challengeWaitBudgetMs,
+          currentUrl: current.url,
+          pagesVisited: pages.length,
+          onEvent: async (eventPayload) => {
+            await reportProgress(progressCallback, eventPayload);
+          }
         });
 
         const allowHumanBehavior = humanBehaviorEnabled && (current.source !== "sitemap" || humanOnSitemap);
