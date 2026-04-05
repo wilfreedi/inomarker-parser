@@ -46,12 +46,14 @@ if ($method === 'GET' && preg_match('#^/sites/(\d+)/findings$#', $path, $matches
     $legacyFindingsPage = isset($_GET['findings_page']) ? (int) $_GET['findings_page'] : 1;
     $fullFindingsPage = isset($_GET['full_page']) ? (int) $_GET['full_page'] : $legacyFindingsPage;
     $shortFindingsPage = isset($_GET['short_page']) ? (int) $_GET['short_page'] : $legacyFindingsPage;
+    $activeReport = isset($_GET['report']) ? (string) $_GET['report'] : 'full';
     echo $controller->siteFindings(
         (int) $matches[1],
         $notice,
         $error,
         max(1, $fullFindingsPage),
-        max(1, $shortFindingsPage)
+        max(1, $shortFindingsPage),
+        $activeReport
     );
     exit;
 }

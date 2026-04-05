@@ -102,13 +102,15 @@ final class AdminController
         ?string $notice,
         ?string $error,
         int $fullFindingsPage = 1,
-        int $shortFindingsPage = 1
+        int $shortFindingsPage = 1,
+        string $activeReport = 'full'
     ): string
     {
         $site = $this->siteRepository->findById($siteId);
         if ($site === null) {
             $this->redirectWithMessage('/sites', null, 'Сайт не найден');
         }
+        $normalizedActiveReport = $this->normalizeFindingsReport($activeReport);
 
         $content = $this->renderer->render('sites/findings', [
             'site' => $site,
@@ -116,6 +118,7 @@ final class AdminController
                 'full' => $this->buildFindingsReport($siteId, 'full', $fullFindingsPage),
                 'short' => $this->buildFindingsReport($siteId, 'short', $shortFindingsPage),
             ],
+            'activeReport' => $normalizedActiveReport,
         ]);
 
         return $this->renderLayout('Site Findings', $content, '/sites', $notice, $error);
@@ -478,6 +481,13 @@ final class AdminController
         ];
     }
 
+    private function normalizeFindingsReport(string $activeReport): string
+    {
+        $normalized = trim(mb_strtolower($activeReport));
+
+        return in_array($normalized, ['full', 'short'], true) ? $normalized : 'full';
+    }
+
     /**
      * @param array<string, mixed> $post
      * @return array{name:string,base_url:string}
@@ -505,7 +515,7 @@ final class AdminController
         }
         if (
             preg_match(
-                '#^/$|^/settings$|^/sites$|^/sites/new$|^/sites/\d+$|^/sites/\d+/edit$|^/sites/\d+/findings(?:\?(?:full_page|short_page|findings_page)=\d+(?:&(?:full_page|short_page|findings_page)=\d+)*)?$#',
+                '#^/$|^/settings$|^/sites$|^/sites/new$|^/sites/\d+$|^/sites/\d+/edit$|^/sites/\d+/findings(?:\?(?:(?:full_page|short_page|findings_page)=\d+|report=(?:full|short))(?:&(?:(?:full_page|short_page|findings_page)=\d+|report=(?:full|short)))*)?$#',
                 $candidate
             ) === 1
         ) {
@@ -602,8 +612,12 @@ final class AdminController
         if ($error !== null && $error !== '') {
             $params['error'] = $error;
         }
-        $query = $params === [] ? '' : '?' . http_build_query($params);
-        $this->redirect($path . $query);
+        if ($params === []) {
+            $this->redirect($path);
+        }
+
+        $separator = str_contains($path, '?') ? '&' : '?';
+        $this->redirect($path . $separator . http_build_query($params));
     }
 
     private function redirect(string $location): void
