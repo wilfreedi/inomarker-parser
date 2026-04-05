@@ -97,35 +97,24 @@ final class AdminController
         return $this->renderLayout('Site Report', $content, '/sites', $notice, $error);
     }
 
-    public function siteFindings(int $siteId, ?string $notice, ?string $error, int $findingsPage = 1): string
+    public function siteFindings(
+        int $siteId,
+        ?string $notice,
+        ?string $error,
+        int $fullFindingsPage = 1,
+        int $shortFindingsPage = 1
+    ): string
     {
         $site = $this->siteRepository->findById($siteId);
         if ($site === null) {
             $this->redirectWithMessage('/sites', null, 'Сайт не найден');
         }
 
-        $perPage = 50;
-        $totalItems = $this->findingRepository->countBySite($siteId);
-        $totalPages = max(1, (int) ceil($totalItems / $perPage));
-        $currentPage = max(1, min($totalPages, $findingsPage));
-        $offset = ($currentPage - 1) * $perPage;
-
         $content = $this->renderer->render('sites/findings', [
             'site' => $site,
-            'findings' => $this->findingRepository->recentBySite($siteId, $perPage, $offset),
-            'summary' => $this->findingRepository->summaryBySite($siteId),
-            'top_entities' => $this->findingRepository->topEntitiesBySite($siteId, 20),
-            'pagination' => [
-                'total_items' => $totalItems,
-                'per_page' => $perPage,
-                'total_pages' => $totalPages,
-                'current_page' => $currentPage,
-                'has_prev' => $currentPage > 1,
-                'has_next' => $currentPage < $totalPages,
-                'prev_page' => $currentPage > 1 ? $currentPage - 1 : 1,
-                'next_page' => $currentPage < $totalPages ? $currentPage + 1 : $totalPages,
-                'start_page' => max(1, $currentPage - 2),
-                'end_page' => min($totalPages, $currentPage + 2),
+            'reports' => [
+                'full' => $this->buildFindingsReport($siteId, 'full', $fullFindingsPage),
+                'short' => $this->buildFindingsReport($siteId, 'short', $shortFindingsPage),
             ],
         ]);
 
@@ -404,7 +393,6 @@ final class AdminController
             'worker_parallel_sites',
             'scan_interval_minutes',
             'worker_stale_run_minutes',
-            'search_short_regex',
             'crawler_max_pages',
             'crawler_max_depth',
             'crawler_timeout_ms',
@@ -417,11 +405,6 @@ final class AdminController
         $settings = [];
         foreach ($allowedKeys as $key) {
             if (!isset($post[$key])) {
-                continue;
-            }
-            if ($key === 'search_short_regex') {
-                $rawValue = mb_strtolower(trim((string) $post[$key]));
-                $settings[$key] = in_array($rawValue, ['1', 'true', 'yes', 'on'], true) ? 1 : 0;
                 continue;
             }
             $value = (int) $post[$key];
@@ -446,6 +429,53 @@ final class AdminController
 
         $this->settingRepository->updateMany($settings);
         $this->redirectWithMessage('/settings', 'Настройки сохранены', null);
+    }
+
+    /** @return array<string, mixed> */
+    private function buildFindingsReport(int $siteId, string $patternSource, int $requestedPage): array
+    {
+        $perPage = 50;
+        $totalItems = $this->findingRepository->countBySiteAndPatternSource($siteId, $patternSource);
+        $pagination = $this->buildPagination($totalItems, $perPage, $requestedPage);
+
+        return [
+            'pattern_source' => $patternSource,
+            'pattern_source_label' => mb_strtoupper($patternSource),
+            'summary' => $this->findingRepository->summaryBySiteAndPatternSource($siteId, $patternSource),
+            'top_entities' => $this->findingRepository->topEntitiesBySiteAndPatternSource($siteId, $patternSource, 20),
+            'categories' => $this->findingRepository->categoriesBySiteAndPatternSource($siteId, $patternSource, 20),
+            'findings' => $this->findingRepository->recentBySiteAndPatternSource(
+                $siteId,
+                $patternSource,
+                $pagination['per_page'],
+                ($pagination['current_page'] - 1) * $pagination['per_page']
+            ),
+            'pagination' => $pagination,
+        ];
+    }
+
+    /** @return array<string, int|bool> */
+    private function buildPagination(int $totalItems, int $perPage, int $requestedPage): array
+    {
+        $perPage = max(1, $perPage);
+        $totalItems = max(0, $totalItems);
+        $totalPages = max(1, (int) ceil($totalItems / $perPage));
+        $currentPage = max(1, min($totalPages, $requestedPage));
+        $hasPrev = $currentPage > 1;
+        $hasNext = $currentPage < $totalPages;
+
+        return [
+            'total_items' => $totalItems,
+            'per_page' => $perPage,
+            'total_pages' => $totalPages,
+            'current_page' => $currentPage,
+            'has_prev' => $hasPrev,
+            'has_next' => $hasNext,
+            'prev_page' => $hasPrev ? $currentPage - 1 : 1,
+            'next_page' => $hasNext ? $currentPage + 1 : $totalPages,
+            'start_page' => max(1, $currentPage - 2),
+            'end_page' => min($totalPages, $currentPage + 2),
+        ];
     }
 
     /**
@@ -473,7 +503,12 @@ final class AdminController
         if ($candidate === '') {
             return $default;
         }
-        if (preg_match('#^/$|^/settings$|^/sites$|^/sites/new$|^/sites/\d+$|^/sites/\d+/edit$|^/sites/\d+/findings$#', $candidate) === 1) {
+        if (
+            preg_match(
+                '#^/$|^/settings$|^/sites$|^/sites/new$|^/sites/\d+$|^/sites/\d+/edit$|^/sites/\d+/findings(?:\?(?:full_page|short_page|findings_page)=\d+(?:&(?:full_page|short_page|findings_page)=\d+)*)?$#',
+                $candidate
+            ) === 1
+        ) {
             return $candidate;
         }
 

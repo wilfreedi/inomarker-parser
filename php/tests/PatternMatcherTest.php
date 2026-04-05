@@ -10,7 +10,7 @@ use PHPUnit\Framework\TestCase;
 
 final class PatternMatcherTest extends TestCase
 {
-    public function testAggregatesOccurrencesByEntityAndCategory(): void
+    public function testAggregatesOccurrencesSeparatelyByPatternSource(): void
     {
         $matcher = new PatternMatcher([
             new PatternDefinition('foreign_agent', 'Entity A', 'full', '(entity\\s+a)'),
@@ -18,19 +18,22 @@ final class PatternMatcherTest extends TestCase
             new PatternDefinition('terrorist', 'Entity B', 'full', '(entity\\s+b)'),
         ]);
 
-        $text = 'Entity A and entity a were mentioned. Also entity b appears once.';
+        $text = 'Entity A and ent a were mentioned. Also entity b appears once. Ent a appeared again.';
         $matches = $matcher->match($text);
 
-        self::assertCount(2, $matches);
+        self::assertCount(3, $matches);
 
-        $byEntity = [];
+        $byEntityAndSource = [];
         foreach ($matches as $match) {
-            $byEntity[$match['entity_name']] = $match;
+            $key = $match['entity_name'] . '|' . $match['pattern_source'];
+            $byEntityAndSource[$key] = $match;
         }
 
-        self::assertSame(2, $byEntity['Entity A']['occurrences']);
-        self::assertSame('foreign_agent', $byEntity['Entity A']['category']);
-        self::assertSame(1, $byEntity['Entity B']['occurrences']);
-        self::assertSame('terrorist', $byEntity['Entity B']['category']);
+        self::assertSame(1, $byEntityAndSource['Entity A|full']['occurrences']);
+        self::assertSame(2, $byEntityAndSource['Entity A|short']['occurrences']);
+        self::assertSame('foreign_agent', $byEntityAndSource['Entity A|full']['category']);
+        self::assertSame('foreign_agent', $byEntityAndSource['Entity A|short']['category']);
+        self::assertSame(1, $byEntityAndSource['Entity B|full']['occurrences']);
+        self::assertSame('terrorist', $byEntityAndSource['Entity B|full']['category']);
     }
 }

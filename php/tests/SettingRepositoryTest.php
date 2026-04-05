@@ -33,6 +33,6 @@ final class SettingRepositoryTest extends TestCase
         self::assertSame('250', $all['crawler_page_pause_ms']);
         self::assertSame('15', $all['crawler_max_depth']);
         self::assertSame('1', $all['worker_parallel_sites']);
-        self::assertSame('1', $all['search_short_regex']);
+        self::assertArrayNotHasKey('search_short_regex', $all);
     }
 }

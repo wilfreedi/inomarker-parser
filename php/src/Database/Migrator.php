@@ -91,6 +91,7 @@ final class Migrator
             'CREATE INDEX IF NOT EXISTS idx_sites_status ON sites(status, is_enabled)',
             'CREATE INDEX IF NOT EXISTS idx_crawl_runs_site ON crawl_runs(site_id, started_at)',
             'CREATE INDEX IF NOT EXISTS idx_findings_site_run ON findings(site_id, run_id)',
+            'CREATE INDEX IF NOT EXISTS idx_findings_site_source ON findings(site_id, pattern_source, id)',
             'CREATE INDEX IF NOT EXISTS idx_findings_entity ON findings(entity_name)',
         ];
 

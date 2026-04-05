@@ -23,7 +23,7 @@ final class CrawlOrchestrator
 
     /**
      * @param array<string, mixed> $site
-     * @param array<string, int|bool> $crawlerOptions
+     * @param array<string, int> $crawlerOptions
      * @return array{pages_total:int,pages_with_matches:int}
      */
     public function scanSite(array $site, array $crawlerOptions): array
@@ -50,10 +50,7 @@ final class CrawlOrchestrator
                 $siteId,
                 sprintf('Crawler вернул %d страниц, запуск анализа совпадений', count($pages))
             );
-            $searchShortRegex = isset($crawlerOptions['search_short_regex'])
-                ? (bool) $crawlerOptions['search_short_regex']
-                : true;
-            $matcher = new PatternMatcher($this->patternCatalog->all($searchShortRegex));
+            $matcher = new PatternMatcher($this->patternCatalog->all(true));
 
             foreach ($pages as $page) {
                 $pagesTotal++;

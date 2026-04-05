@@ -32,11 +32,6 @@ final class WorkerService
             $requestTimeoutSeconds = max(30, (int) ($settings['crawler_request_timeout_seconds'] ?? 300));
             $retryAttempts = max(1, (int) ($settings['crawler_retry_attempts'] ?? 2));
             $retryDelayMs = max(100, (int) ($settings['crawler_retry_delay_ms'] ?? 1500));
-            $searchShortRegex = in_array(
-                mb_strtolower(trim((string) ($settings['search_short_regex'] ?? '1'))),
-                ['1', 'true', 'yes', 'on'],
-                true
-            );
             $minStaleByCrawlerSeconds = ($requestTimeoutSeconds * $retryAttempts) + (($retryAttempts - 1) * (int) ceil($retryDelayMs / 1000)) + 60;
             $minStaleByCrawlerMinutes = max(1, (int) ceil($minStaleByCrawlerSeconds / 60));
             $staleRunMinutes = max($configuredStaleRunMinutes, $minStaleByCrawlerMinutes);
@@ -72,7 +67,6 @@ final class WorkerService
                 'request_timeout_seconds' => $requestTimeoutSeconds,
                 'retry_attempts' => $retryAttempts,
                 'retry_delay_ms' => $retryDelayMs,
-                'search_short_regex' => $searchShortRegex,
             ];
 
             if ($parallelSites > 1 && count($claimedSites) > 1) {

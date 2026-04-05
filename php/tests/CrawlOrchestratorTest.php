@@ -80,8 +80,11 @@ final class CrawlOrchestratorTest extends DatabaseTestCase
         self::assertNull($storedSite['last_error']);
 
         $findings = (new FindingRepository($this->pdo))->recentBySite($siteId, 10);
-        self::assertCount(1, $findings);
+        self::assertCount(2, $findings);
         self::assertSame('Entity Alpha', $findings[0]['entity_name']);
+        $sources = array_values(array_unique(array_map(static fn (array $finding): string => (string) $finding['pattern_source'], $findings)));
+        sort($sources);
+        self::assertSame(['full', 'short'], $sources);
     }
 
     public function testScanFailsWhenCrawlerReturnsNoPages(): void
@@ -116,7 +119,7 @@ final class CrawlOrchestratorTest extends DatabaseTestCase
         }
     }
 
-    public function testScanCanDisableShortRegexMatching(): void
+    public function testScanStoresFullAndShortFindingsInSingleRun(): void
     {
         $siteRepository = new SiteRepository($this->pdo);
         $siteRepository->create('Site A', 'https://example.org');
@@ -129,7 +132,7 @@ final class CrawlOrchestratorTest extends DatabaseTestCase
                 'status' => 200,
                 'body' => json_encode([
                     'pages' => [
-                        ['url' => 'https://example.org', 'status' => 200, 'title' => 'Home', 'text' => 'alpha appears here'],
+                        ['url' => 'https://example.org', 'status' => 200, 'title' => 'Home', 'text' => 'entity alpha appears here, alpha appears too'],
                     ],
                 ], JSON_THROW_ON_ERROR),
                 'error' => null,
@@ -137,16 +140,15 @@ final class CrawlOrchestratorTest extends DatabaseTestCase
             ];
         });
 
-        $result = $orchestrator->scanSite($site, [
-            'retry_attempts' => 1,
-            'retry_delay_ms' => 1,
-            'search_short_regex' => false,
-        ]);
+        $result = $orchestrator->scanSite($site, ['retry_attempts' => 1, 'retry_delay_ms' => 1]);
         self::assertSame(1, $result['pages_total']);
-        self::assertSame(0, $result['pages_with_matches']);
+        self::assertSame(1, $result['pages_with_matches']);
 
         $findings = (new FindingRepository($this->pdo))->recentBySite($siteId, 10);
-        self::assertCount(0, $findings);
+        self::assertCount(2, $findings);
+        $sources = array_values(array_unique(array_map(static fn (array $finding): string => (string) $finding['pattern_source'], $findings)));
+        sort($sources);
+        self::assertSame(['full', 'short'], $sources);
     }
 
     public function testScanFailsWhenCrawlerReturnsOnlyInvalidUrls(): void
@@ -214,14 +216,14 @@ final class CrawlOrchestratorTest extends DatabaseTestCase
         self::assertSame(1, (int) $storedPage['is_matched']);
 
         $findingsBefore = $findingRepository->recentBySite($siteId, 10);
-        self::assertCount(1, $findingsBefore);
+        self::assertCount(2, $findingsBefore);
 
         $second = $orchestrator->scanSite($site, ['retry_attempts' => 1, 'retry_delay_ms' => 1]);
         self::assertSame(1, $second['pages_total']);
         self::assertSame(0, $second['pages_with_matches']);
 
         $findingsAfter = $findingRepository->recentBySite($siteId, 10);
-        self::assertCount(1, $findingsAfter);
+        self::assertCount(2, $findingsAfter);
     }
 
     /** @param callable(string, string): array{ok:bool,status:int,body:string|null,error:string|null,curl_failed:bool} $transport */

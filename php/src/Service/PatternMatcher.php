@@ -38,7 +38,7 @@ final class PatternMatcher
 
             $firstMatch = $matches[0][0][0] ?? '';
             $firstOffset = (int) ($matches[0][0][1] ?? 0);
-            $resultKey = $patternDefinition->category . '|' . $patternDefinition->entityName;
+            $resultKey = $patternDefinition->category . '|' . $patternDefinition->entityName . '|' . $patternDefinition->source;
 
             if (isset($results[$resultKey])) {
                 $results[$resultKey]['occurrences'] += $matchCount;
