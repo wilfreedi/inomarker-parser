@@ -6,8 +6,8 @@ namespace App\Service;
 
 final class PatternCatalog
 {
-    /** @var array<int, PatternDefinition> */
-    private array $cache = [];
+    /** @var array<string, array<int, PatternDefinition>> */
+    private array $cacheByMode = [];
     private ?int $cachedMtime = null;
 
     public function __construct(private readonly string $jsonPath)
@@ -15,11 +15,15 @@ final class PatternCatalog
     }
 
     /** @return array<int, PatternDefinition> */
-    public function all(): array
+    public function all(bool $includeShort = true): array
     {
         $mtime = file_exists($this->jsonPath) ? filemtime($this->jsonPath) : null;
-        if ($this->cache !== [] && $this->cachedMtime === $mtime) {
-            return $this->cache;
+        if ($this->cachedMtime !== null && $this->cachedMtime !== $mtime) {
+            $this->cacheByMode = [];
+        }
+        $cacheKey = $includeShort ? 'with_short' : 'without_short';
+        if (isset($this->cacheByMode[$cacheKey]) && $this->cachedMtime === $mtime) {
+            return $this->cacheByMode[$cacheKey];
         }
 
         if (!file_exists($this->jsonPath)) {
@@ -51,7 +55,7 @@ final class PatternCatalog
                 $short = $entityPatterns['short'] ?? null;
                 $full = $entityPatterns['full'] ?? null;
 
-                if (is_string($short) && trim($short) !== '') {
+                if ($includeShort && is_string($short) && trim($short) !== '') {
                     $patterns[] = new PatternDefinition($category, (string) $entityName, 'short', $short);
                 }
                 if (is_string($full) && trim($full) !== '') {
@@ -61,7 +65,7 @@ final class PatternCatalog
         }
 
         $this->cachedMtime = $mtime;
-        $this->cache = $patterns;
+        $this->cacheByMode[$cacheKey] = $patterns;
 
         return $patterns;
     }

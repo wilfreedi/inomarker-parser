@@ -116,6 +116,39 @@ final class CrawlOrchestratorTest extends DatabaseTestCase
         }
     }
 
+    public function testScanCanDisableShortRegexMatching(): void
+    {
+        $siteRepository = new SiteRepository($this->pdo);
+        $siteRepository->create('Site A', 'https://example.org');
+        $site = $siteRepository->all()[0];
+        $siteId = (int) $site['id'];
+
+        $orchestrator = $this->buildOrchestrator(static function (): array {
+            return [
+                'ok' => true,
+                'status' => 200,
+                'body' => json_encode([
+                    'pages' => [
+                        ['url' => 'https://example.org', 'status' => 200, 'title' => 'Home', 'text' => 'alpha appears here'],
+                    ],
+                ], JSON_THROW_ON_ERROR),
+                'error' => null,
+                'curl_failed' => false,
+            ];
+        });
+
+        $result = $orchestrator->scanSite($site, [
+            'retry_attempts' => 1,
+            'retry_delay_ms' => 1,
+            'search_short_regex' => false,
+        ]);
+        self::assertSame(1, $result['pages_total']);
+        self::assertSame(0, $result['pages_with_matches']);
+
+        $findings = (new FindingRepository($this->pdo))->recentBySite($siteId, 10);
+        self::assertCount(0, $findings);
+    }
+
     public function testScanFailsWhenCrawlerReturnsOnlyInvalidUrls(): void
     {
         $siteRepository = new SiteRepository($this->pdo);

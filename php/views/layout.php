@@ -146,6 +146,19 @@ declare(strict_types=1);
             border-color: var(--brand);
             box-shadow: 0 0 0 3px rgba(0, 90, 213, 0.15);
         }
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .checkbox-label input[type="checkbox"] {
+            width: auto;
+            margin-top: 0;
+            border-radius: 4px;
+            padding: 0;
+            accent-color: var(--brand);
+            box-shadow: none;
+        }
         .button-row {
             display: flex;
             gap: 8px;

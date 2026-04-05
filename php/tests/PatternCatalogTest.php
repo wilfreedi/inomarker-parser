@@ -24,4 +24,20 @@ final class PatternCatalogTest extends TestCase
             $categories
         );
     }
+
+    public function testCanSkipShortPatterns(): void
+    {
+        $catalog = new PatternCatalog(__DIR__ . '/fixtures/patterns.json');
+        $patterns = $catalog->all(false);
+
+        self::assertCount(2, $patterns);
+
+        $categories = array_map(static fn ($pattern): string => $pattern->category, $patterns);
+        sort($categories);
+
+        self::assertSame(
+            ['extremist', 'foreign_agent'],
+            $categories
+        );
+    }
 }

@@ -116,6 +116,11 @@ final class Application
             throw new \RuntimeException("Site {$siteId} not found");
         }
         $settings = $this->settingRepository->all();
+        $searchShortRegex = in_array(
+            mb_strtolower(trim((string) ($settings['search_short_regex'] ?? '1'))),
+            ['1', 'true', 'yes', 'on'],
+            true
+        );
         $this->crawlOrchestrator->scanSite($site, [
             'max_pages' => (int) ($settings['crawler_max_pages'] ?? 10000),
             'max_depth' => (int) ($settings['crawler_max_depth'] ?? 15),
@@ -124,6 +129,7 @@ final class Application
             'request_timeout_seconds' => (int) ($settings['crawler_request_timeout_seconds'] ?? 600),
             'retry_attempts' => (int) ($settings['crawler_retry_attempts'] ?? 3),
             'retry_delay_ms' => (int) ($settings['crawler_retry_delay_ms'] ?? 2500),
+            'search_short_regex' => $searchShortRegex,
         ]);
     }
 }

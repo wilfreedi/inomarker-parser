@@ -70,6 +70,16 @@ declare(strict_types=1);
                 Пауза между повторами (мс)
                 <input type="number" min="100" step="100" name="crawler_retry_delay_ms" value="<?= (int) ($settings['crawler_retry_delay_ms'] ?? 2500) ?>">
             </label>
+            <input type="hidden" name="search_short_regex" value="0">
+            <label class="checkbox-label">
+                <input
+                    type="checkbox"
+                    name="search_short_regex"
+                    value="1"
+                    <?= ((int) ($settings['search_short_regex'] ?? 1) === 1) ? 'checked' : '' ?>
+                >
+                Включить поиск по short регуляркам
+            </label>
             <button type="submit">Сохранить</button>
         </form>
     </section>

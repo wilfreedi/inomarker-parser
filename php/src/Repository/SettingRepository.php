@@ -14,6 +14,7 @@ final class SettingRepository
         'worker_parallel_sites' => '1',
         'scan_interval_minutes' => '360',
         'worker_stale_run_minutes' => '5',
+        'search_short_regex' => '1',
         'crawler_max_pages' => '10000',
         'crawler_max_depth' => '15',
         'crawler_timeout_ms' => '45000',

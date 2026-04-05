@@ -404,6 +404,7 @@ final class AdminController
             'worker_parallel_sites',
             'scan_interval_minutes',
             'worker_stale_run_minutes',
+            'search_short_regex',
             'crawler_max_pages',
             'crawler_max_depth',
             'crawler_timeout_ms',
@@ -416,6 +417,11 @@ final class AdminController
         $settings = [];
         foreach ($allowedKeys as $key) {
             if (!isset($post[$key])) {
+                continue;
+            }
+            if ($key === 'search_short_regex') {
+                $rawValue = mb_strtolower(trim((string) $post[$key]));
+                $settings[$key] = in_array($rawValue, ['1', 'true', 'yes', 'on'], true) ? 1 : 0;
                 continue;
             }
             $value = (int) $post[$key];

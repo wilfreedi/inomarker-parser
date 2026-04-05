@@ -11,6 +11,7 @@ declare(strict_types=1);
 
 $siteId = (int) $site['id'];
 $currentPage = (int) ($pagination['current_page'] ?? 1);
+$showSummaryBlocks = $currentPage === 1;
 $buildFindingsUrl = static function (int $targetSiteId, int $targetPage): string {
     if ($targetPage <= 1) {
         return "/sites/{$targetSiteId}/findings";
@@ -46,53 +47,55 @@ $buildFindingsUrl = static function (int $targetSiteId, int $targetPage): string
         ]) ?>
     </section>
 
-    <section class="card third">
-        <div class="metric">
-            <span class="label">Всего совпадений</span>
-            <span class="value"><?= (int) ($summary['occurrences_total'] ?? 0) ?></span>
-        </div>
-        <p class="muted">Записей: <?= (int) ($summary['findings_total'] ?? 0) ?></p>
-    </section>
-    <section class="card third">
-        <div class="metric">
-            <span class="label">Уникальных сущностей</span>
-            <span class="value"><?= (int) ($summary['entities_total'] ?? 0) ?></span>
-        </div>
-    </section>
-    <section class="card third">
-        <div class="metric">
-            <span class="label">Текущая страница</span>
-            <span class="value"><?= $currentPage ?></span>
-        </div>
-        <p class="muted">Всего страниц: <?= (int) ($pagination['total_pages'] ?? 1) ?></p>
-    </section>
+    <?php if ($showSummaryBlocks): ?>
+        <section class="card third">
+            <div class="metric">
+                <span class="label">Всего совпадений</span>
+                <span class="value"><?= (int) ($summary['occurrences_total'] ?? 0) ?></span>
+            </div>
+            <p class="muted">Записей: <?= (int) ($summary['findings_total'] ?? 0) ?></p>
+        </section>
+        <section class="card third">
+            <div class="metric">
+                <span class="label">Уникальных сущностей</span>
+                <span class="value"><?= (int) ($summary['entities_total'] ?? 0) ?></span>
+            </div>
+        </section>
+        <section class="card third">
+            <div class="metric">
+                <span class="label">Текущая страница</span>
+                <span class="value"><?= $currentPage ?></span>
+            </div>
+            <p class="muted">Всего страниц: <?= (int) ($pagination['total_pages'] ?? 1) ?></p>
+        </section>
 
-    <section class="card half">
-        <h2>Топ сущностей</h2>
-        <table>
-            <thead>
-            <tr>
-                <th>Сущность</th>
-                <th>Категория</th>
-                <th>Записей</th>
-                <th>Вхождений</th>
-            </tr>
-            </thead>
-            <tbody>
-            <?php foreach ($top_entities as $row): ?>
+        <section class="card half">
+            <h2>Топ сущностей</h2>
+            <table>
+                <thead>
                 <tr>
-                    <td><?= htmlspecialchars((string) $row['entity_name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></td>
-                    <td><?= htmlspecialchars((string) $row['category'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></td>
-                    <td><?= (int) $row['finding_rows'] ?></td>
-                    <td><?= (int) $row['total_occurrences'] ?></td>
+                    <th>Сущность</th>
+                    <th>Категория</th>
+                    <th>Записей</th>
+                    <th>Вхождений</th>
                 </tr>
-            <?php endforeach; ?>
-            <?php if ($top_entities === []): ?>
-                <tr><td colspan="4" class="muted">Совпадений пока нет.</td></tr>
-            <?php endif; ?>
-            </tbody>
-        </table>
-    </section>
+                </thead>
+                <tbody>
+                <?php foreach ($top_entities as $row): ?>
+                    <tr>
+                        <td><?= htmlspecialchars((string) $row['entity_name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></td>
+                        <td><?= htmlspecialchars((string) $row['category'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></td>
+                        <td><?= (int) $row['finding_rows'] ?></td>
+                        <td><?= (int) $row['total_occurrences'] ?></td>
+                    </tr>
+                <?php endforeach; ?>
+                <?php if ($top_entities === []): ?>
+                    <tr><td colspan="4" class="muted">Совпадений пока нет.</td></tr>
+                <?php endif; ?>
+                </tbody>
+            </table>
+        </section>
+    <?php endif; ?>
 
     <section class="card full">
         <h2>Все совпадения</h2>
