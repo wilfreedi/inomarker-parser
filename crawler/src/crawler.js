@@ -991,10 +991,22 @@ function extractLinks(rawLinks, baseUrl, siteHost) {
 async function extractPagePayload(page, pageUrl, siteHost, timeoutMs) {
   const safeTimeoutMs = Math.max(500, Number(timeoutMs || 1500));
   const evaluatePromise = page.evaluate(() => {
-    const links = Array.from(document.querySelectorAll("a[href]"))
+    const root = document.body;
+    if (!root) {
+      return {
+        title: document.title || "",
+        text: "",
+        links: []
+      };
+    }
+
+    const contentRoot = root.cloneNode(true);
+    contentRoot.querySelectorAll(".inomarker-footnotes").forEach((node) => node.remove());
+
+    const links = Array.from(contentRoot.querySelectorAll("a[href]"))
       .map((node) => node.getAttribute("href"))
       .filter(Boolean);
-    const pageText = (document.body ? document.body.innerText : "")
+    const pageText = String(contentRoot.innerText || "")
       .replace(/\s+/g, " ")
       .trim();
 
