@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Tests;
 
 use App\Repository\FindingRepository;
+use App\Repository\FindingRevalidationRepository;
 use App\Repository\PageRepository;
 use App\Repository\SiteRepository;
 use App\Service\FindingsRevalidator;
@@ -24,7 +25,8 @@ final class FindingsRevalidatorTest extends DatabaseTestCase
 
         $service = new FindingsRevalidator(
             new FindingRepository($this->pdo),
-            new PageRepository($this->pdo)
+            new PageRepository($this->pdo),
+            new FindingRevalidationRepository($this->pdo)
         );
 
         $result = $service->revalidateSite($siteId, 'full');

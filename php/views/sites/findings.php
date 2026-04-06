@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 /** @var array<string, mixed> $site */
 /** @var array<string, array<string, mixed>> $reports */
+/** @var array<string, array<string, mixed>> $revalidationStatuses */
 /** @var callable $renderComponent */
 /** @var string|null $activeReport */
 
@@ -91,6 +92,13 @@ $reportDescriptions = [
     'full' => 'Точные совпадения по полным выражениям.',
     'short' => 'Поиск по кратким вариантам регулярных выражений.',
 ];
+$statusLabels = [
+    'never' => 'Не запускалась',
+    'queued' => 'В очереди',
+    'running' => 'Выполняется',
+    'completed' => 'Завершена',
+    'failed' => 'Ошибка',
+];
 ?>
 <style>
     .report-switch {
@@ -157,6 +165,43 @@ $reportDescriptions = [
         opacity: 0.65;
         cursor: default;
     }
+    .revalidation-status {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--panel-soft);
+        padding: 12px 14px;
+        margin-bottom: 12px;
+    }
+    .revalidation-status-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 10px;
+    }
+    .revalidation-status-item {
+        font-size: 13px;
+    }
+    .revalidation-status-label {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+        margin-bottom: 4px;
+    }
+    .revalidation-status-value {
+        font-weight: 700;
+    }
+    .revalidation-status-error {
+        margin-top: 8px;
+        color: var(--danger);
+        font-size: 13px;
+    }
+    @media (max-width: 900px) {
+        .revalidation-status-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
 </style>
 <div class="grid">
     <section class="card full">
@@ -220,6 +265,7 @@ $reportDescriptions = [
         $topEntities = is_array($report['top_entities'] ?? null) ? $report['top_entities'] : [];
         $categories = is_array($report['categories'] ?? null) ? $report['categories'] : [];
         $findings = is_array($report['findings'] ?? null) ? $report['findings'] : [];
+        $revalidationStatus = is_array($revalidationStatuses[$reportKey] ?? null) ? $revalidationStatuses[$reportKey] : [];
         $pagination = is_array($report['pagination'] ?? null) ? $report['pagination'] : [
             'current_page' => 1,
             'total_pages' => 1,
@@ -244,6 +290,7 @@ $reportDescriptions = [
             return $buildFindingsUrl($siteId, $currentFullPage, $targetPage, 'short');
         };
         $isPaginatedView = (int) ($pagination['current_page'] ?? 1) > 1;
+        $isRevalidationBusy = in_array((string) ($revalidationStatus['status'] ?? 'never'), ['queued', 'running'], true);
         ?>
 
         <?php if (!$isPaginatedView): ?>
@@ -341,8 +388,43 @@ $reportDescriptions = [
             <form method="post" action="/sites/<?= $siteId ?>/findings/revalidate" class="button-row" style="margin-bottom: 12px;">
                 <input type="hidden" name="pattern_source" value="<?= htmlspecialchars($reportKey, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>">
                 <input type="hidden" name="return_to" value="<?= htmlspecialchars($buildFindingsUrl($siteId, $currentFullPage, $currentShortPage, $activeReport), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>">
-                <button type="submit" class="warning">Перепроверить в фоне</button>
+                <button
+                    type="submit"
+                    class="warning"
+                    data-revalidation-trigger
+                    <?= $isRevalidationBusy ? 'disabled' : '' ?>
+                ><?= $isRevalidationBusy ? 'Перепроверка запущена' : 'Перепроверить в фоне' ?></button>
             </form>
+            <div
+                class="revalidation-status"
+                data-revalidation-status
+                data-site-id="<?= $siteId ?>"
+                data-report="<?= htmlspecialchars($reportKey, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>"
+            >
+                <div><strong>Статус:</strong> <span data-revalidation-field="status"><?= htmlspecialchars((string) ($statusLabels[$revalidationStatus['status'] ?? 'never'] ?? ($revalidationStatus['status'] ?? 'never')), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></span></div>
+                <div class="revalidation-status-grid">
+                    <div class="revalidation-status-item">
+                        <span class="revalidation-status-label">Всего</span>
+                        <span class="revalidation-status-value" data-revalidation-field="total_findings"><?= (int) ($revalidationStatus['total_findings'] ?? 0) ?></span>
+                    </div>
+                    <div class="revalidation-status-item">
+                        <span class="revalidation-status-label">Проверено</span>
+                        <span class="revalidation-status-value" data-revalidation-field="checked_findings"><?= (int) ($revalidationStatus['checked_findings'] ?? 0) ?></span>
+                    </div>
+                    <div class="revalidation-status-item">
+                        <span class="revalidation-status-label">Осталось</span>
+                        <span class="revalidation-status-value" data-revalidation-field="remaining_findings"><?= (int) ($revalidationStatus['remaining_findings'] ?? 0) ?></span>
+                    </div>
+                    <div class="revalidation-status-item">
+                        <span class="revalidation-status-label">Удалено</span>
+                        <span class="revalidation-status-value" data-revalidation-field="deleted_findings"><?= (int) ($revalidationStatus['deleted_findings'] ?? 0) ?></span>
+                    </div>
+                </div>
+                <div class="muted" style="margin-top: 8px;">
+                    Обновлено: <span data-revalidation-field="updated_at"><?= htmlspecialchars((string) ($revalidationStatus['updated_at'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></span>
+                </div>
+                <div class="revalidation-status-error" data-revalidation-field="error_message"><?= htmlspecialchars((string) ($revalidationStatus['error_message'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></div>
+            </div>
             <table>
                 <thead>
                 <tr>
@@ -415,6 +497,88 @@ $reportDescriptions = [
             radio.addEventListener('change', function () {
                 switchForm.submit();
             });
+        });
+    })();
+
+    (function () {
+        var statusLabels = {
+            never: 'Не запускалась',
+            queued: 'В очереди',
+            running: 'Выполняется',
+            completed: 'Завершена',
+            failed: 'Ошибка'
+        };
+        var statusBlocks = document.querySelectorAll('[data-revalidation-status]');
+        statusBlocks.forEach(function (block) {
+            var siteId = Number(block.getAttribute('data-site-id') || '0');
+            var report = String(block.getAttribute('data-report') || 'full');
+            if (!Number.isInteger(siteId) || siteId <= 0) {
+                return;
+            }
+
+            var renderStatus = function (payload) {
+                if (!payload || typeof payload !== 'object') {
+                    return;
+                }
+                var status = String(payload.status || 'never');
+                var fields = {
+                    status: statusLabels[status] || status,
+                    total_findings: String(Number(payload.total_findings || 0)),
+                    checked_findings: String(Number(payload.checked_findings || 0)),
+                    remaining_findings: String(Number(payload.remaining_findings || 0)),
+                    deleted_findings: String(Number(payload.deleted_findings || 0)),
+                    updated_at: String(payload.updated_at || ''),
+                    error_message: String(payload.error_message || '')
+                };
+                Object.keys(fields).forEach(function (fieldName) {
+                    var target = block.querySelector('[data-revalidation-field="' + fieldName + '"]');
+                    if (target) {
+                        target.textContent = fields[fieldName];
+                    }
+                });
+
+                var trigger = block.parentElement ? block.parentElement.querySelector('[data-revalidation-trigger]') : null;
+                if (trigger) {
+                    var isBusy = status === 'queued' || status === 'running';
+                    if (isBusy) {
+                        trigger.setAttribute('disabled', 'disabled');
+                        trigger.textContent = 'Перепроверка запущена';
+                    } else {
+                        trigger.removeAttribute('disabled');
+                        trigger.textContent = 'Перепроверить в фоне';
+                    }
+                }
+
+                return status;
+            };
+
+            var poll = function () {
+                fetch('/api/sites/' + siteId + '/findings/revalidation-status?report=' + encodeURIComponent(report), {
+                    method: 'GET',
+                    headers: { Accept: 'application/json' },
+                    cache: 'no-store',
+                }).then(function (response) {
+                    return response.json().catch(function () { return null; }).then(function (payload) {
+                        return { response: response, payload: payload };
+                    });
+                }).then(function (result) {
+                    if (!result.response.ok || !result.payload || result.payload.ok !== true || !result.payload.revalidation) {
+                        return;
+                    }
+                    var status = renderStatus(result.payload.revalidation);
+                    if (status === 'queued' || status === 'running') {
+                        window.setTimeout(poll, 2500);
+                    }
+                }).catch(function () {
+                    window.setTimeout(poll, 5000);
+                });
+            };
+
+            var initialStatusNode = block.querySelector('[data-revalidation-field="status"]');
+            var initialStatus = initialStatusNode ? String(initialStatusNode.textContent || '') : '';
+            if (initialStatus === 'В очереди' || initialStatus === 'Выполняется') {
+                window.setTimeout(poll, 1000);
+            }
         });
     })();
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Service;
 
 use App\Repository\FindingRepository;
+use App\Repository\FindingRevalidationRepository;
 use App\Repository\PageRepository;
 
 final class FindingsRevalidator
@@ -12,6 +13,7 @@ final class FindingsRevalidator
     public function __construct(
         private readonly FindingRepository $findingRepository,
         private readonly PageRepository $pageRepository,
+        private readonly FindingRevalidationRepository $findingRevalidationRepository,
     ) {
     }
 
@@ -20,6 +22,9 @@ final class FindingsRevalidator
      */
     public function revalidateSite(int $siteId, string $patternSource): array
     {
+        $total = $this->findingRepository->countBySiteAndPatternSource($siteId, $patternSource);
+        $this->findingRevalidationRepository->markRunning($siteId, $patternSource, $total);
+
         $checked = 0;
         $deleted = 0;
         $pageIdsToSync = [];
@@ -35,29 +40,26 @@ final class FindingsRevalidator
             foreach ($findings as $finding) {
                 $afterId = max($afterId, (int) ($finding['id'] ?? 0));
                 $checked++;
+                $shouldDelete = false;
+                $pageId = (int) ($finding['page_id'] ?? 0);
 
                 $fragment = trim((string) ($finding['context_excerpt'] ?? ''));
                 if ($fragment === '') {
                     $fragment = trim((string) ($finding['matched_text'] ?? ''));
                 }
-                if ($fragment === '') {
-                    continue;
-                }
-
-                $content = (string) ($finding['page_content'] ?? '');
-                if ($this->containsFragment($content, $fragment)) {
-                    continue;
-                }
-
                 $findingId = (int) ($finding['id'] ?? 0);
-                $pageId = (int) ($finding['page_id'] ?? 0);
-                if ($findingId <= 0 || $pageId <= 0) {
-                    continue;
+                if ($fragment !== '' && $findingId > 0 && $pageId > 0) {
+                    $content = (string) ($finding['page_content'] ?? '');
+                    $shouldDelete = !$this->containsFragment($content, $fragment);
                 }
 
-                if ($this->findingRepository->deleteByIdAndSite($findingId, $siteId)) {
+                if ($shouldDelete && $this->findingRepository->deleteByIdAndSite($findingId, $siteId)) {
                     $deleted++;
                     $pageIdsToSync[$pageId] = true;
+                }
+
+                if ($checked % 25 === 0) {
+                    $this->findingRevalidationRepository->updateProgress($siteId, $patternSource, $checked, $deleted);
                 }
             }
 
@@ -69,6 +71,9 @@ final class FindingsRevalidator
         foreach (array_keys($pageIdsToSync) as $pageId) {
             $this->pageRepository->syncMatchedState((int) $pageId);
         }
+
+        $this->findingRevalidationRepository->updateProgress($siteId, $patternSource, $checked, $deleted);
+        $this->findingRevalidationRepository->markCompleted($siteId, $patternSource, $checked, $deleted);
 
         return [
             'checked' => $checked,

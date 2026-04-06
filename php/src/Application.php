@@ -10,6 +10,7 @@ use App\Database\ConnectionFactory;
 use App\Database\Migrator;
 use App\Repository\CrawlRunRepository;
 use App\Repository\FindingRepository;
+use App\Repository\FindingRevalidationRepository;
 use App\Repository\PageRepository;
 use App\Repository\RunRepository;
 use App\Repository\SettingRepository;
@@ -34,6 +35,7 @@ final class Application
     private RunRepository $runRepository;
     private PageRepository $pageRepository;
     private FindingRepository $findingRepository;
+    private FindingRevalidationRepository $findingRevalidationRepository;
     private PatternCatalog $patternCatalog;
     private RegexSyncService $regexSyncService;
     private FindingsRevalidator $findingsRevalidator;
@@ -54,6 +56,7 @@ final class Application
         $this->runRepository = new RunRepository($this->pdo);
         $this->pageRepository = new PageRepository($this->pdo);
         $this->findingRepository = new FindingRepository($this->pdo);
+        $this->findingRevalidationRepository = new FindingRevalidationRepository($this->pdo);
 
         $this->patternCatalog = new PatternCatalog($this->config->getString('regex_db_path'));
         $this->regexSyncService = new RegexSyncService(
@@ -63,7 +66,8 @@ final class Application
         );
         $this->findingsRevalidator = new FindingsRevalidator(
             $this->findingRepository,
-            $this->pageRepository
+            $this->pageRepository,
+            $this->findingRevalidationRepository
         );
         $this->detachedConsoleLauncher = new DetachedConsoleLauncher(
             $this->config->getString('app_base_path') . '/bin/console'
@@ -102,6 +106,7 @@ final class Application
             $this->siteRepository,
             $this->settingRepository,
             $this->findingRepository,
+            $this->findingRevalidationRepository,
             $this->crawlRunRepository,
             $this->runRepository,
             $this->pageRepository,
@@ -155,6 +160,17 @@ final class Application
             throw new \RuntimeException("Site {$siteId} not found");
         }
 
-        return $this->findingsRevalidator->revalidateSite($siteId, $patternSource);
+        try {
+            return $this->findingsRevalidator->revalidateSite($siteId, $patternSource);
+        } catch (\Throwable $exception) {
+            $this->findingRevalidationRepository->markFailed($siteId, $patternSource, $exception->getMessage());
+            throw $exception;
+        }
+    }
+
+    /** @return array<string, mixed>|null */
+    public function findingRevalidationStatus(int $siteId, string $patternSource): ?array
+    {
+        return $this->findingRevalidationRepository->findBySiteAndPatternSource($siteId, $patternSource);
     }
 }

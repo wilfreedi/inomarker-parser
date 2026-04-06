@@ -260,6 +260,11 @@ if ($method === 'DELETE' && preg_match('#^/api/sites/(\d+)/findings/(\d+)$#', $p
     $controller->deleteFindingApi((int) $matches[1], (int) $matches[2]);
 }
 
+if ($method === 'GET' && preg_match('#^/api/sites/(\d+)/findings/revalidation-status$#', $path, $matches) === 1) {
+    $report = isset($_GET['report']) ? (string) $_GET['report'] : 'full';
+    $controller->findingRevalidationStatusApi((int) $matches[1], $report);
+}
+
 http_response_code(404);
 header('Content-Type: text/plain; charset=utf-8');
 echo 'Not found';

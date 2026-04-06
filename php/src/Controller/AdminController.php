@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Controller;
 
 use App\Repository\FindingRepository;
+use App\Repository\FindingRevalidationRepository;
 use App\Repository\CrawlRunRepository;
 use App\Repository\RunRepository;
 use App\Repository\SettingRepository;
@@ -21,6 +22,7 @@ final class AdminController
         private readonly SiteRepository $siteRepository,
         private readonly SettingRepository $settingRepository,
         private readonly FindingRepository $findingRepository,
+        private readonly FindingRevalidationRepository $findingRevalidationRepository,
         private readonly CrawlRunRepository $crawlRunRepository,
         private readonly RunRepository $runRepository,
         private readonly PageRepository $pageRepository,
@@ -122,6 +124,10 @@ final class AdminController
             'reports' => [
                 'full' => $this->buildFindingsReport($siteId, 'full', $fullFindingsPage),
                 'short' => $this->buildFindingsReport($siteId, 'short', $shortFindingsPage),
+            ],
+            'revalidationStatuses' => [
+                'full' => $this->findingRevalidationStatusView($siteId, 'full'),
+                'short' => $this->findingRevalidationStatusView($siteId, 'short'),
             ],
             'activeReport' => $normalizedActiveReport,
         ]);
@@ -531,6 +537,8 @@ final class AdminController
         }
 
         try {
+            $total = $this->findingRepository->countBySiteAndPatternSource($siteId, $patternSource);
+            $this->findingRevalidationRepository->markQueued($siteId, $patternSource, $total);
             $this->detachedConsoleLauncher->launch(['findings:revalidate', $siteId, $patternSource]);
             $this->redirectWithMessage(
                 $returnPath,
@@ -538,8 +546,22 @@ final class AdminController
                 null
             );
         } catch (\Throwable $exception) {
+            $this->findingRevalidationRepository->markFailed($siteId, $patternSource, $exception->getMessage());
             $this->redirectWithMessage($returnPath, null, $exception->getMessage());
         }
+    }
+
+    public function findingRevalidationStatusApi(int $siteId, string $patternSource): void
+    {
+        $site = $this->siteRepository->findById($siteId);
+        if ($site === null) {
+            $this->respondJson(404, ['ok' => false, 'error' => 'site_not_found']);
+        }
+
+        $this->respondJson(200, [
+            'ok' => true,
+            'revalidation' => $this->findingRevalidationStatusView($siteId, $patternSource),
+        ]);
     }
 
     /** @return array<string, mixed> */
@@ -594,6 +616,42 @@ final class AdminController
         $normalized = trim(mb_strtolower($activeReport));
 
         return in_array($normalized, ['full', 'short'], true) ? $normalized : 'full';
+    }
+
+    /** @return array<string, mixed> */
+    private function findingRevalidationStatusView(int $siteId, string $patternSource): array
+    {
+        $status = $this->findingRevalidationRepository->findBySiteAndPatternSource($siteId, $patternSource);
+        if ($status === null) {
+            return [
+                'pattern_source' => $patternSource,
+                'status' => 'never',
+                'total_findings' => 0,
+                'checked_findings' => 0,
+                'deleted_findings' => 0,
+                'remaining_findings' => 0,
+                'error_message' => '',
+                'started_at' => '',
+                'finished_at' => '',
+                'updated_at' => '',
+            ];
+        }
+
+        $totalFindings = max(0, (int) ($status['total_findings'] ?? 0));
+        $checkedFindings = max(0, (int) ($status['checked_findings'] ?? 0));
+
+        return [
+            'pattern_source' => $patternSource,
+            'status' => (string) ($status['status'] ?? 'never'),
+            'total_findings' => $totalFindings,
+            'checked_findings' => $checkedFindings,
+            'deleted_findings' => max(0, (int) ($status['deleted_findings'] ?? 0)),
+            'remaining_findings' => max(0, $totalFindings - $checkedFindings),
+            'error_message' => (string) ($status['error_message'] ?? ''),
+            'started_at' => (string) ($status['started_at'] ?? ''),
+            'finished_at' => (string) ($status['finished_at'] ?? ''),
+            'updated_at' => (string) ($status['updated_at'] ?? ''),
+        ];
     }
 
     /**

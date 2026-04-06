@@ -88,11 +88,28 @@ final class Migrator
                 FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE
             )
             SQL,
+            <<<SQL
+            CREATE TABLE IF NOT EXISTS finding_revalidations (
+                site_id INTEGER NOT NULL,
+                pattern_source TEXT NOT NULL,
+                status TEXT NOT NULL,
+                total_findings INTEGER NOT NULL DEFAULT 0,
+                checked_findings INTEGER NOT NULL DEFAULT 0,
+                deleted_findings INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT NULL,
+                started_at TEXT NULL,
+                finished_at TEXT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (site_id, pattern_source),
+                FOREIGN KEY(site_id) REFERENCES sites(id) ON DELETE CASCADE
+            )
+            SQL,
             'CREATE INDEX IF NOT EXISTS idx_sites_status ON sites(status, is_enabled)',
             'CREATE INDEX IF NOT EXISTS idx_crawl_runs_site ON crawl_runs(site_id, started_at)',
             'CREATE INDEX IF NOT EXISTS idx_findings_site_run ON findings(site_id, run_id)',
             'CREATE INDEX IF NOT EXISTS idx_findings_site_source ON findings(site_id, pattern_source, id)',
             'CREATE INDEX IF NOT EXISTS idx_findings_entity ON findings(entity_name)',
+            'CREATE INDEX IF NOT EXISTS idx_finding_revalidations_site_updated ON finding_revalidations(site_id, updated_at)',
         ];
 
         foreach ($queries as $query) {
