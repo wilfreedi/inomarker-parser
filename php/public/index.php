@@ -197,6 +197,10 @@ if ($method === 'GET' && $path === '/settings') {
     exit;
 }
 
+if ($method === 'GET' && $path === '/settings/regex-json') {
+    $controller->currentRegexJson();
+}
+
 if ($method === 'POST' && $path === '/sites') {
     $controller->createSite($_POST);
 }

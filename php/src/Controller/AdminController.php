@@ -30,6 +30,7 @@ final class AdminController
         private readonly Renderer $renderer,
         private readonly RegexSyncService $regexSyncService,
         private readonly DetachedConsoleLauncher $detachedConsoleLauncher,
+        private readonly string $regexJsonPath,
         private readonly string $crawlerProgressToken = '',
         private readonly string $adminSecretPassword = 'лох',
     ) {
@@ -562,6 +563,28 @@ final class AdminController
             'ok' => true,
             'revalidation' => $this->findingRevalidationStatusView($siteId, $patternSource),
         ]);
+    }
+
+    public function currentRegexJson(): void
+    {
+        if (!file_exists($this->regexJsonPath)) {
+            http_response_code(404);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo 'Regex JSON not found';
+            exit;
+        }
+
+        $raw = file_get_contents($this->regexJsonPath);
+        if ($raw === false) {
+            http_response_code(500);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo 'Cannot read regex JSON';
+            exit;
+        }
+
+        header('Content-Type: application/json; charset=utf-8');
+        echo $raw;
+        exit;
     }
 
     /** @return array<string, mixed> */

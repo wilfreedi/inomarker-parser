@@ -225,8 +225,6 @@ final class SiteRepository
     public function claimForScan(int $limit, int $scanIntervalMinutes): array
     {
         $limit = max(1, $limit);
-        $scanIntervalMinutes = max(1, $scanIntervalMinutes);
-        $dueBefore = gmdate('Y-m-d H:i:s', time() - ($scanIntervalMinutes * 60));
 
         $this->pdo->beginTransaction();
         try {
@@ -234,19 +232,12 @@ final class SiteRepository
             SELECT * FROM sites
             WHERE is_enabled = 1
               AND status IN ('idle', 'failed')
-              AND (
-                scan_requested_at IS NOT NULL
-                OR last_crawled_at IS NULL
-                OR last_crawled_at <= :due_before
-              )
+              AND scan_requested_at IS NOT NULL
             ORDER BY
-                CASE WHEN scan_requested_at IS NULL THEN 1 ELSE 0 END,
-                scan_requested_at ASC,
-                last_crawled_at ASC
+                scan_requested_at ASC
             LIMIT :batch_limit
             SQL;
             $stmt = $this->pdo->prepare($query);
-            $stmt->bindValue(':due_before', $dueBefore);
             $stmt->bindValue(':batch_limit', $limit, PDO::PARAM_INT);
             $stmt->execute();
             $sites = $stmt->fetchAll();

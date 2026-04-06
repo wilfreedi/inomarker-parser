@@ -8,7 +8,7 @@ final class PatternCatalog
 {
     /** @var array<string, array<int, PatternDefinition>> */
     private array $cacheByMode = [];
-    private ?int $cachedMtime = null;
+    private ?string $cachedFingerprint = null;
 
     public function __construct(private readonly string $jsonPath)
     {
@@ -17,15 +17,6 @@ final class PatternCatalog
     /** @return array<int, PatternDefinition> */
     public function all(bool $includeShort = true): array
     {
-        $mtime = file_exists($this->jsonPath) ? filemtime($this->jsonPath) : null;
-        if ($this->cachedMtime !== null && $this->cachedMtime !== $mtime) {
-            $this->cacheByMode = [];
-        }
-        $cacheKey = $includeShort ? 'with_short' : 'without_short';
-        if (isset($this->cacheByMode[$cacheKey]) && $this->cachedMtime === $mtime) {
-            return $this->cacheByMode[$cacheKey];
-        }
-
         if (!file_exists($this->jsonPath)) {
             throw new \RuntimeException("Regex source file is missing: {$this->jsonPath}");
         }
@@ -33,6 +24,15 @@ final class PatternCatalog
         $raw = file_get_contents($this->jsonPath);
         if ($raw === false) {
             throw new \RuntimeException("Cannot read regex source file: {$this->jsonPath}");
+        }
+
+        $fingerprint = hash('sha256', $raw);
+        if ($this->cachedFingerprint !== null && $this->cachedFingerprint !== $fingerprint) {
+            $this->cacheByMode = [];
+        }
+        $cacheKey = $includeShort ? 'with_short' : 'without_short';
+        if (isset($this->cacheByMode[$cacheKey]) && $this->cachedFingerprint === $fingerprint) {
+            return $this->cacheByMode[$cacheKey];
         }
 
         $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
@@ -64,7 +64,7 @@ final class PatternCatalog
             }
         }
 
-        $this->cachedMtime = $mtime;
+        $this->cachedFingerprint = $fingerprint;
         $this->cacheByMode[$cacheKey] = $patterns;
 
         return $patterns;

@@ -40,4 +40,36 @@ final class PatternCatalogTest extends TestCase
             $categories
         );
     }
+
+    public function testReloadsPatternsWhenJsonChangesWithinSameProcess(): void
+    {
+        $path = sys_get_temp_dir() . '/pattern-catalog-' . bin2hex(random_bytes(8)) . '.json';
+
+        try {
+            file_put_contents($path, json_encode([
+                'foreign_agent' => [
+                    'Entity A' => ['short' => null, 'full' => 'alpha'],
+                ],
+            ], JSON_THROW_ON_ERROR));
+
+            $catalog = new PatternCatalog($path);
+            $first = $catalog->all();
+            self::assertCount(1, $first);
+            self::assertSame('Entity A', $first[0]->entityName);
+
+            file_put_contents($path, json_encode([
+                'foreign_agent' => [
+                    'Entity B' => ['short' => null, 'full' => 'beta'],
+                ],
+            ], JSON_THROW_ON_ERROR));
+
+            $second = $catalog->all();
+            self::assertCount(1, $second);
+            self::assertSame('Entity B', $second[0]->entityName);
+        } finally {
+            if (file_exists($path)) {
+                unlink($path);
+            }
+        }
+    }
 }

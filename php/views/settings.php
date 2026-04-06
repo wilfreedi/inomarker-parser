@@ -37,9 +37,12 @@ if ($regexLastAttemptRaw !== '') {
                     <p class="page-subtitle">Ошибка: <?= htmlspecialchars((string) $regexSyncMeta['last_error'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></p>
                 <?php endif; ?>
             </div>
-            <form method="post" action="/settings/regex-refresh">
-                <button type="submit">Обновить регулярки</button>
-            </form>
+            <div class="button-row">
+                <form method="post" action="/settings/regex-refresh">
+                    <button type="submit">Обновить регулярки</button>
+                </form>
+                <a class="subtle-link" href="/settings/regex-json" target="_blank" rel="noreferrer">Открыть текущий JSON</a>
+            </div>
         </div>
     </section>
 

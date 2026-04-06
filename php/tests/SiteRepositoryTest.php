@@ -64,7 +64,7 @@ final class SiteRepositoryTest extends DatabaseTestCase
         self::assertNotNull($requested['scan_requested_at']);
     }
 
-    public function testClaimForScanClaimsOnlyEnabledAndDueSites(): void
+    public function testClaimForScanClaimsOnlyExplicitlyRequestedSites(): void
     {
         $this->repository->create('Site Due', 'https://due.example.org');
         $this->repository->create('Site Paused', 'https://paused.example.org');
@@ -85,6 +85,20 @@ final class SiteRepositoryTest extends DatabaseTestCase
 
         $pausedSite = $this->repository->findById($pausedSiteId);
         self::assertSame('paused', $pausedSite['status']);
+    }
+
+    public function testClaimForScanDoesNotAutoClaimSiteWithoutExplicitRequest(): void
+    {
+        $this->repository->create('Site Auto', 'https://auto.example.org');
+        $siteId = (int) $this->repository->all()[0]['id'];
+
+        $claimed = $this->repository->claimForScan(10, 360);
+
+        self::assertSame([], $claimed);
+        $site = $this->repository->findById($siteId);
+        self::assertNotNull($site);
+        self::assertSame('idle', $site['status']);
+        self::assertNull($site['scan_requested_at']);
     }
 
     public function testDeleteRemovesSiteFromStorage(): void

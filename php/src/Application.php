@@ -114,6 +114,7 @@ final class Application
             $this->renderer,
             $this->regexSyncService,
             $this->detachedConsoleLauncher,
+            $this->config->getString('regex_db_path'),
             $this->config->getString('crawler_progress_token'),
             $this->config->getString('admin_secret_password')
         );
