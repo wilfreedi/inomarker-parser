@@ -143,6 +143,20 @@ $reportDescriptions = [
         padding: 0 2px;
         font-weight: 700;
     }
+    .finding-delete-button {
+        background: #b91c1c;
+        color: #fff;
+        padding: 6px 10px;
+        border-radius: 8px;
+        border: 0;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+    }
+    .finding-delete-button[disabled] {
+        opacity: 0.65;
+        cursor: default;
+    }
 </style>
 <div class="grid">
     <section class="card full">
@@ -330,15 +344,17 @@ $reportDescriptions = [
                     <th>Сущность</th>
                     <th>Страница</th>
                     <th>Фрагмент</th>
+                    <th>Действия</th>
                 </tr>
                 </thead>
-                <tbody>
+                <tbody id="findings-table-body" data-site-id="<?= $siteId ?>">
                 <?php foreach ($findings as $finding): ?>
                     <?php
                     $fragmentText = (string) ($finding['context_excerpt'] ?: $finding['matched_text']);
                     $matchedText = (string) ($finding['matched_text'] ?? '');
+                    $findingId = (int) ($finding['id'] ?? 0);
                     ?>
-                    <tr>
+                    <tr data-finding-row data-finding-id="<?= $findingId ?>">
                         <td><?= htmlspecialchars((string) $finding['entity_name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></td>
                         <td>
                             <a href="<?= htmlspecialchars((string) $finding['page_url'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>" target="_blank" rel="noreferrer">
@@ -346,10 +362,18 @@ $reportDescriptions = [
                             </a>
                         </td>
                         <td class="mono"><?= $highlightFragment($fragmentText, $matchedText) ?></td>
+                        <td>
+                            <button
+                                type="button"
+                                class="finding-delete-button"
+                                data-delete-finding
+                                <?= $findingId > 0 ? '' : 'disabled' ?>
+                            >Удалить</button>
+                        </td>
                     </tr>
                 <?php endforeach; ?>
                 <?php if ($findings === []): ?>
-                    <tr><td colspan="3" class="muted">Совпадений пока нет.</td></tr>
+                    <tr data-empty-row><td colspan="4" class="muted">Совпадений пока нет.</td></tr>
                 <?php endif; ?>
                 </tbody>
             </table>
@@ -385,6 +409,68 @@ $reportDescriptions = [
         radios.forEach(function (radio) {
             radio.addEventListener('change', function () {
                 switchForm.submit();
+            });
+        });
+    })();
+
+    (function () {
+        var findingsBody = document.getElementById('findings-table-body');
+        if (!findingsBody) {
+            return;
+        }
+
+        var siteId = Number(findingsBody.getAttribute('data-site-id') || '0');
+        if (!Number.isInteger(siteId) || siteId <= 0) {
+            return;
+        }
+
+        findingsBody.addEventListener('click', function (event) {
+            var target = event.target;
+            if (!(target instanceof Element)) {
+                return;
+            }
+            var button = target.closest('[data-delete-finding]');
+            if (!button) {
+                return;
+            }
+            var row = button.closest('[data-finding-row]');
+            if (!row) {
+                return;
+            }
+            var findingId = Number(row.getAttribute('data-finding-id') || '0');
+            if (!Number.isInteger(findingId) || findingId <= 0) {
+                return;
+            }
+            if (!window.confirm('Удалить эту запись из таблицы совпадений?')) {
+                return;
+            }
+
+            var originalLabel = button.textContent || 'Удалить';
+            button.setAttribute('disabled', 'disabled');
+            button.textContent = 'Удаление...';
+
+            fetch('/api/sites/' + siteId + '/findings/' + findingId, {
+                method: 'DELETE',
+                headers: { Accept: 'application/json' },
+                cache: 'no-store',
+            }).then(function (response) {
+                return response.json().catch(function () { return null; }).then(function (payload) {
+                    return { response: response, payload: payload };
+                });
+            }).then(function (result) {
+                if (!result.response.ok || !result.payload || result.payload.ok !== true) {
+                    throw new Error('delete_failed');
+                }
+
+                row.remove();
+                var remaining = findingsBody.querySelectorAll('[data-finding-row]');
+                if (remaining.length === 0) {
+                    findingsBody.innerHTML = '<tr data-empty-row><td colspan="4" class="muted">Совпадений пока нет.</td></tr>';
+                }
+            }).catch(function () {
+                button.removeAttribute('disabled');
+                button.textContent = originalLabel;
+                window.alert('Не удалось удалить запись. Обновите страницу и попробуйте снова.');
             });
         });
     })();

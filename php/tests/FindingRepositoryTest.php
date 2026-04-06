@@ -44,6 +44,43 @@ final class FindingRepositoryTest extends DatabaseTestCase
         self::assertCount(2, $shortCategories);
     }
 
+    public function testDeleteByIdAndSiteDeletesOnlyTargetFinding(): void
+    {
+        $siteRepository = new SiteRepository($this->pdo);
+        $siteRepository->create('Site A', 'https://a.example.org');
+        $siteRepository->create('Site B', 'https://b.example.org');
+        $sites = $siteRepository->all();
+        $siteAId = 0;
+        $siteBId = 0;
+        foreach ($sites as $site) {
+            $baseUrl = (string) ($site['base_url'] ?? '');
+            if ($baseUrl === 'https://a.example.org') {
+                $siteAId = (int) ($site['id'] ?? 0);
+            }
+            if ($baseUrl === 'https://b.example.org') {
+                $siteBId = (int) ($site['id'] ?? 0);
+            }
+        }
+        self::assertGreaterThan(0, $siteAId);
+        self::assertGreaterThan(0, $siteBId);
+
+        $runA = $this->insertRun($siteAId);
+        $runB = $this->insertRun($siteBId);
+        $pageA = $this->insertPage($siteAId, 'https://a.example.org/a');
+        $pageB = $this->insertPage($siteBId, 'https://b.example.org/b');
+
+        $findingA = $this->insertFinding($runA, $siteAId, $pageA, 'foreign_agent', 'Entity A', 'full', 1);
+        $findingB = $this->insertFinding($runB, $siteBId, $pageB, 'terrorist', 'Entity B', 'short', 2);
+
+        $repository = new FindingRepository($this->pdo);
+
+        self::assertNotNull($repository->findByIdAndSite($findingA, $siteAId));
+        self::assertFalse($repository->deleteByIdAndSite($findingA, $siteBId));
+        self::assertTrue($repository->deleteByIdAndSite($findingA, $siteAId));
+        self::assertNull($repository->findByIdAndSite($findingA, $siteAId));
+        self::assertNotNull($repository->findByIdAndSite($findingB, $siteBId));
+    }
+
     private function insertRun(int $siteId): int
     {
         $stmt = $this->pdo->prepare(
@@ -95,7 +132,7 @@ final class FindingRepositoryTest extends DatabaseTestCase
         string $entityName,
         string $patternSource,
         int $occurrences,
-    ): void {
+    ): int {
         $stmt = $this->pdo->prepare(
             <<<SQL
             INSERT INTO findings (
@@ -119,5 +156,7 @@ final class FindingRepositoryTest extends DatabaseTestCase
             ':context_excerpt' => $entityName . ' context',
             ':created_at' => '2026-04-01 10:00:20',
         ]);
+
+        return (int) $this->pdo->lastInsertId();
     }
 }

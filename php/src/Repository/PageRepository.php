@@ -82,6 +82,39 @@ final class PageRepository
         ]);
     }
 
+    public function syncMatchedState(int $pageId): void
+    {
+        $entitiesStmt = $this->pdo->prepare(
+            'SELECT DISTINCT entity_name FROM findings WHERE page_id = :page_id ORDER BY entity_name ASC'
+        );
+        $entitiesStmt->bindValue(':page_id', $pageId, PDO::PARAM_INT);
+        $entitiesStmt->execute();
+        $rows = $entitiesStmt->fetchAll(PDO::FETCH_COLUMN);
+
+        $entityNames = [];
+        if (is_array($rows)) {
+            foreach ($rows as $row) {
+                $name = trim((string) $row);
+                if ($name !== '') {
+                    $entityNames[] = $name;
+                }
+            }
+        }
+        $entityNames = array_values(array_unique($entityNames));
+        $matchedEntities = $entityNames === [] ? null : json_encode($entityNames, JSON_THROW_ON_ERROR);
+
+        $stmt = $this->pdo->prepare(
+            "UPDATE pages
+             SET is_matched = :is_matched,
+                 matched_entities = :matched_entities
+             WHERE id = :id"
+        );
+        $stmt->bindValue(':is_matched', $entityNames === [] ? 0 : 1, PDO::PARAM_INT);
+        $stmt->bindValue(':matched_entities', $matchedEntities, $matchedEntities === null ? PDO::PARAM_NULL : PDO::PARAM_STR);
+        $stmt->bindValue(':id', $pageId, PDO::PARAM_INT);
+        $stmt->execute();
+    }
+
     /** @return array<int, array<string, mixed>> */
     public function recentBySite(int $siteId, int $limit = 100, int $offset = 0): array
     {

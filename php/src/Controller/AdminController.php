@@ -25,6 +25,7 @@ final class AdminController
         private readonly SiteReportService $siteReportService,
         private readonly Renderer $renderer,
         private readonly string $crawlerProgressToken = '',
+        private readonly string $adminSecretPassword = 'лох',
     ) {
     }
 
@@ -131,6 +132,25 @@ final class AdminController
         ]);
 
         return $this->renderLayout('Settings', $content, '/settings', $notice, $error);
+    }
+
+    public function login(?string $notice, ?string $error, string $returnTo = '/'): string
+    {
+        $content = $this->renderer->render('auth/login', [
+            'return_to' => $returnTo,
+        ]);
+
+        return $this->renderLayout('Login', $content, '', $notice, $error, false);
+    }
+
+    public function isValidAdminPassword(string $password): bool
+    {
+        $trimmed = trim($password);
+        if ($trimmed === '' || $this->adminSecretPassword === '') {
+            return false;
+        }
+
+        return hash_equals($this->adminSecretPassword, $trimmed);
     }
 
     /** @param array<string, mixed> $post */
@@ -250,6 +270,35 @@ final class AdminController
             'Переобход запущен: данные очищены, сайт поставлен в очередь',
             null
         );
+    }
+
+    public function deleteFindingApi(int $siteId, int $findingId): void
+    {
+        if ($siteId <= 0 || $findingId <= 0) {
+            $this->respondJson(422, ['ok' => false, 'error' => 'invalid_ids']);
+        }
+
+        $site = $this->siteRepository->findById($siteId);
+        if ($site === null) {
+            $this->respondJson(404, ['ok' => false, 'error' => 'site_not_found']);
+        }
+
+        $finding = $this->findingRepository->findByIdAndSite($findingId, $siteId);
+        if ($finding === null) {
+            $this->respondJson(404, ['ok' => false, 'error' => 'finding_not_found']);
+        }
+
+        $deleted = $this->findingRepository->deleteByIdAndSite($findingId, $siteId);
+        if (!$deleted) {
+            $this->respondJson(409, ['ok' => false, 'error' => 'delete_conflict']);
+        }
+
+        $this->pageRepository->syncMatchedState((int) $finding['page_id']);
+        $this->respondJson(200, [
+            'ok' => true,
+            'site_id' => $siteId,
+            'finding_id' => $findingId,
+        ]);
     }
 
     /** @param array<string, mixed> $server */
@@ -593,6 +642,7 @@ final class AdminController
         string $activePath,
         ?string $notice,
         ?string $error,
+        bool $isAuthenticated = true,
     ): string {
         return $this->renderer->render('layout', [
             'title' => $title . ' • Parser Inomarker',
@@ -600,6 +650,7 @@ final class AdminController
             'notice' => $notice,
             'error' => $error,
             'activePath' => $activePath,
+            'isAuthenticated' => $isAuthenticated,
         ]);
     }
 

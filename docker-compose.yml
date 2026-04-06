@@ -17,6 +17,7 @@ services:
       APP_BASE_PATH: /workspace/php
       DB_PATH: /workspace/php/storage/database.sqlite
       REGEX_DB_PATH: /workspace/db.json
+      ADMIN_SECRET_PASSWORD: лох
       CRAWLER_ENDPOINT: http://crawler:3000/crawl
       CRAWLER_PROGRESS_ENDPOINT: http://app:8080/internal/crawl-progress
       CRAWLER_PROGRESS_TOKEN: dev-progress-token
@@ -48,6 +49,7 @@ services:
       APP_BASE_PATH: /workspace/php
       DB_PATH: /workspace/php/storage/database.sqlite
       REGEX_DB_PATH: /workspace/db.json
+      ADMIN_SECRET_PASSWORD: лох
       CRAWLER_ENDPOINT: http://crawler:3000/crawl
       CRAWLER_PROGRESS_ENDPOINT: http://app:8080/internal/crawl-progress
       CRAWLER_PROGRESS_TOKEN: dev-progress-token

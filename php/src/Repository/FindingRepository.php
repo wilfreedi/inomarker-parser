@@ -118,6 +118,30 @@ final class FindingRepository
         return (int) $stmt->fetchColumn();
     }
 
+    /** @return array<string, mixed>|null */
+    public function findByIdAndSite(int $findingId, int $siteId): ?array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT id, site_id, page_id, pattern_source FROM findings WHERE id = :id AND site_id = :site_id LIMIT 1'
+        );
+        $stmt->bindValue(':id', $findingId, PDO::PARAM_INT);
+        $stmt->bindValue(':site_id', $siteId, PDO::PARAM_INT);
+        $stmt->execute();
+        $row = $stmt->fetch();
+
+        return is_array($row) ? $row : null;
+    }
+
+    public function deleteByIdAndSite(int $findingId, int $siteId): bool
+    {
+        $stmt = $this->pdo->prepare('DELETE FROM findings WHERE id = :id AND site_id = :site_id');
+        $stmt->bindValue(':id', $findingId, PDO::PARAM_INT);
+        $stmt->bindValue(':site_id', $siteId, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return $stmt->rowCount() > 0;
+    }
+
     /** @return array<int, array<string, mixed>> */
     public function topEntitiesBySite(int $siteId, int $limit = 20): array
     {

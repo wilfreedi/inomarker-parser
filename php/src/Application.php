@@ -89,7 +89,8 @@ final class Application
             $this->pageRepository,
             $this->siteReportService,
             $this->renderer,
-            $this->config->getString('crawler_progress_token')
+            $this->config->getString('crawler_progress_token'),
+            $this->config->getString('admin_secret_password')
         );
     }
 

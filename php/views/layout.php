@@ -7,6 +7,9 @@ declare(strict_types=1);
 /** @var string|null $notice */
 /** @var string|null $error */
 /** @var string $activePath */
+/** @var bool|null $isAuthenticated */
+
+$isAuthenticated = (bool) ($isAuthenticated ?? true);
 ?>
 <!doctype html>
 <html lang="ru">
@@ -69,6 +72,11 @@ declare(strict_types=1);
             background: #f1f5f9;
             border: 1px solid var(--line);
         }
+        .topbar-right {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+        }
         .tab {
             text-decoration: none;
             font-size: 13px;
@@ -80,6 +88,18 @@ declare(strict_types=1);
         .tab.active {
             background: var(--brand);
             color: #fff;
+        }
+        .logout-form {
+            margin: 0;
+        }
+        .logout-button {
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            background: #fff;
+            color: var(--muted);
+            font-weight: 700;
+            padding: 8px 12px;
+            cursor: pointer;
         }
         .muted { color: var(--muted); }
         .alert {
@@ -329,11 +349,18 @@ declare(strict_types=1);
             <h1>Parser Inomarker</h1>
             <p>Управление сайтами, обходом и аналитикой совпадений.</p>
         </div>
-        <nav class="tabs" aria-label="Основная навигация">
-            <a class="tab <?= $activePath === '/' ? 'active' : '' ?>" href="/">Dashboard</a>
-            <a class="tab <?= $activePath === '/sites' ? 'active' : '' ?>" href="/sites">Sites</a>
-            <a class="tab <?= $activePath === '/settings' ? 'active' : '' ?>" href="/settings">Settings</a>
-        </nav>
+        <?php if ($isAuthenticated): ?>
+            <div class="topbar-right">
+                <nav class="tabs" aria-label="Основная навигация">
+                    <a class="tab <?= $activePath === '/' ? 'active' : '' ?>" href="/">Dashboard</a>
+                    <a class="tab <?= $activePath === '/sites' ? 'active' : '' ?>" href="/sites">Sites</a>
+                    <a class="tab <?= $activePath === '/settings' ? 'active' : '' ?>" href="/settings">Settings</a>
+                </nav>
+                <form method="post" action="/logout" class="logout-form">
+                    <button type="submit" class="logout-button">Выйти</button>
+                </form>
+            </div>
+        <?php endif; ?>
     </header>
 
     <?php if (!empty($notice)): ?>

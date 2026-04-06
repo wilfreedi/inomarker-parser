@@ -50,6 +50,9 @@ docker compose up --build
 После запуска:
 - админка: `http://localhost:8080`
 - crawler health: `http://localhost:3000/health`
+- вход в админку: пароль по умолчанию `лох` (можно переопределить через `ADMIN_SECRET_PASSWORD`)
+
+Сессия в админке хранится 24 часа после успешного входа.
 
 ## CLI команды
 В контейнере `app` или `worker`:

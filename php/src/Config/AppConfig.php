@@ -26,6 +26,7 @@ final class AppConfig
             'app_base_path' => $basePath,
             'db_path' => Env::get('DB_PATH', $basePath . '/storage/database.sqlite') ?? '',
             'regex_db_path' => Env::get('REGEX_DB_PATH', $projectRoot . '/db.json') ?? '',
+            'admin_secret_password' => Env::get('ADMIN_SECRET_PASSWORD', 'лох') ?? 'лох',
             'crawler_endpoint' => Env::get('CRAWLER_ENDPOINT', 'http://crawler:3000/crawl') ?? '',
             'crawler_progress_endpoint' => Env::get('CRAWLER_PROGRESS_ENDPOINT', '') ?? '',
             'crawler_progress_token' => Env::get('CRAWLER_PROGRESS_TOKEN', '') ?? '',
