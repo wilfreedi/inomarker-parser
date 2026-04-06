@@ -83,6 +83,24 @@ function errorToMessage(error) {
   return String(error || "unknown_error");
 }
 
+function isNavigationTimeoutError(error) {
+  const message = errorToMessage(error).toLowerCase();
+
+  return message.includes("navigation timeout");
+}
+
+function hasMeaningfulPagePayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  const titleLen = String(payload.title || "").trim().length;
+  const textLen = String(payload.text || "").trim().length;
+  const linksCount = Array.isArray(payload.linksFiltered) ? payload.linksFiltered.length : 0;
+
+  return textLen >= 200 || linksCount >= 3 || titleLen >= 12;
+}
+
 function normalizeProgressLevel(level) {
   const normalized = String(level || "info").trim().toLowerCase();
   if (!Object.prototype.hasOwnProperty.call(PROGRESS_LEVEL_WEIGHTS, normalized) || normalized === "off") {
@@ -708,7 +726,32 @@ async function discoverDynamicLinks(page, options) {
         document.body ? document.body.scrollHeight : 0,
         document.documentElement ? document.documentElement.scrollHeight : 0
       );
-      window.scrollTo({ top: target, behavior: "auto" });
+      return new Promise((resolve) => {
+        const start = window.scrollY || window.pageYOffset || 0;
+        const distance = Math.max(0, target - start);
+        if (distance <= 0) {
+          window.scrollTo({ top: target, behavior: "auto" });
+          resolve();
+          return;
+        }
+
+        const durationMs = Math.min(900, Math.max(220, Math.round(distance / 2.5)));
+        const startedAt = performance.now();
+        const tick = (now) => {
+          const elapsed = now - startedAt;
+          const progress = Math.min(1, elapsed / durationMs);
+          const eased = 1 - Math.pow(1 - progress, 3);
+          window.scrollTo(0, start + (distance * eased));
+          if (progress >= 1) {
+            window.scrollTo(0, target);
+            resolve();
+            return;
+          }
+          requestAnimationFrame(tick);
+        };
+
+        requestAnimationFrame(tick);
+      });
     }).catch(() => undefined);
 
     const pauseMs = randomInt(pauseMinMs, pauseMaxMs);
@@ -744,23 +787,23 @@ async function discoverDynamicLinks(page, options) {
       return;
     }
 
-    const hasGrowth = after.linksCount > before.linksCount || after.scrollHeight > before.scrollHeight;
+    const hasHeightGrowth = after.scrollHeight > before.scrollHeight;
     if (onEvent) {
       await onEvent({
         pagesVisited,
         currentUrl,
-        event: `Динамический добор ссылок: шаг ${step + 1}, linksAfter=${after.linksCount}, growth=${hasGrowth ? "yes" : "no"}`,
+        event: `Динамический добор ссылок: шаг ${step + 1}, linksAfter=${after.linksCount}, heightBefore=${before.scrollHeight}, heightAfter=${after.scrollHeight}, heightGrowth=${hasHeightGrowth ? "yes" : "no"}`,
         eventLevel: "debug"
       });
     }
-    if (!hasGrowth) {
+    if (!hasHeightGrowth) {
       stableSteps++;
       if (stableSteps >= stableStepsToStop) {
         if (onEvent) {
           await onEvent({
             pagesVisited,
             currentUrl,
-            event: `Динамический добор ссылок завершен: стабилизация (${stableStepsToStop} шага без роста)`,
+            event: `Динамический добор ссылок завершен: стабилизация высоты (${stableStepsToStop} шага без роста)`,
             eventLevel: "info"
           });
         }
@@ -1566,6 +1609,11 @@ async function crawlSite(options) {
   const dynamicBudgetMs = Math.max(1200, Number(process.env.CRAWLER_DYNAMIC_BUDGET_MS || 10000));
   const throughputQueueThreshold = Math.max(100, Number(process.env.CRAWLER_THROUGHPUT_QUEUE_THRESHOLD || 500));
   const minRequestIntervalMs = Math.max(0, Number(process.env.CRAWLER_MIN_REQUEST_INTERVAL_MS || 0));
+  const adaptiveNavEnabled = String(process.env.CRAWLER_ADAPTIVE_NAV_TIMEOUT_ENABLED || "1") !== "0";
+  const adaptiveNavMinMs = Math.max(1500, Number(process.env.CRAWLER_ADAPTIVE_NAV_MIN_MS || 5000));
+  const adaptiveNavStepMs = Math.max(500, Number(process.env.CRAWLER_ADAPTIVE_NAV_STEP_MS || 3000));
+  const adaptiveNavMaxAttempts = Math.max(1, Number(process.env.CRAWLER_ADAPTIVE_NAV_MAX_ATTEMPTS || 4));
+  const adaptiveNavDecayMs = Math.max(250, Number(process.env.CRAWLER_ADAPTIVE_NAV_DECAY_MS || 800));
   const abortSignal = options.abortSignal || null;
   const progressCallback = options.progressCallback || null;
   const pacer = createRequestPacer({
@@ -1635,6 +1683,8 @@ async function crawlSite(options) {
   const pages = [];
   let stopReason = "queue_empty";
   let processedSinceRecycle = 0;
+  let adaptiveNavigationTimeoutMs = Math.min(timeoutMs, adaptiveNavMinMs);
+  let recoveredTimeoutStreak = 0;
 
   let contextClosed = false;
   const closeContext = async () => {
@@ -1784,6 +1834,7 @@ async function crawlSite(options) {
       let text = "";
       let pageLinks = [];
       const pageDeadlineAt = Math.min(deadlineAt, Date.now() + pageMaxMs);
+      let extractedFromTimeoutPayload = null;
 
       try {
         await reportProgress(progressCallback, {
@@ -1804,148 +1855,220 @@ async function crawlSite(options) {
           });
           break;
         }
-        const navigationTimeoutMs = Math.max(1000, Math.min(timeoutMs, remainingBeforeNavMs - 500, remainingForPageMs));
-        await reportProgress(progressCallback, {
-          pagesVisited: pages.length,
-          currentUrl: current.url,
-          event: `Навигация page.goto(waitUntil=domcontentloaded, timeout=${navigationTimeoutMs}мс)`,
-          eventLevel: "debug"
-        });
-        const navigationStartedAt = Date.now();
-        const response = await page.goto(current.url, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
-        const navigationElapsedMs = Date.now() - navigationStartedAt;
-        status = response ? response.status() : null;
-        pacer.markResponse(status);
-        await reportProgress(progressCallback, {
-          pagesVisited: pages.length,
-          currentUrl: current.url,
-          event: `Навигация завершена: status=${status ?? "n/a"}, elapsed=${navigationElapsedMs}мс`,
-          eventLevel: status !== null && status >= 400 ? "warn" : "debug"
-        });
-        const remainingBeforeChallengeMs = remainingMs(pageDeadlineAt);
-        const challengeWaitBudgetMs = remainingBeforeChallengeMs > extractionReserveMs + 1200
-          ? Math.min(12_000, remainingBeforeChallengeMs - extractionReserveMs)
-          : 0;
-        await waitForJsChallengeClearance(page, {
-          deadlineAt: pageDeadlineAt,
-          abortSignal,
-          maxWaitMs: challengeWaitBudgetMs,
-          currentUrl: current.url,
-          pagesVisited: pages.length,
-          onEvent: async (eventPayload) => {
-            await reportProgress(progressCallback, eventPayload);
-          }
-        });
-
-        const allowHumanBehavior = humanBehaviorEnabled && (current.source !== "sitemap" || humanOnSitemap);
-        const throughputMode = queue.length >= throughputQueueThreshold && current.source !== "sitemap";
-        const remainingBeforeHumanMs = remainingMs(pageDeadlineAt);
-        if (allowHumanBehavior && !throughputMode && remainingBeforeHumanMs > extractionReserveMs + 1200) {
-          const humanTimeBudgetMs = Math.min(humanBudgetMs, remainingBeforeHumanMs - extractionReserveMs);
-          const humanDeadlineAt = Date.now() + humanTimeBudgetMs;
+        const navigationMaxBudgetMs = Math.max(1000, Math.min(timeoutMs, remainingBeforeNavMs - 500, remainingForPageMs));
+        let navigationAttempt = 0;
+        while (true) {
+          navigationAttempt++;
+          const adaptiveTimeoutMs = adaptiveNavEnabled ? adaptiveNavigationTimeoutMs : navigationMaxBudgetMs;
+          const navigationTimeoutMs = Math.max(1000, Math.min(navigationMaxBudgetMs, adaptiveTimeoutMs));
           await reportProgress(progressCallback, {
             pagesVisited: pages.length,
             currentUrl: current.url,
-            event: `Запуск эмуляции пользовательского поведения (budget=${humanTimeBudgetMs}мс)`,
+            event: `Навигация page.goto(waitUntil=domcontentloaded, timeout=${navigationTimeoutMs}мс, attempt=${navigationAttempt})`,
             eventLevel: "debug"
           });
-          await emulateHumanBehavior(page, {
-            deadlineAt: Math.min(pageDeadlineAt, humanDeadlineAt),
-            abortSignal,
-            minActions: humanActionsMin,
-            maxActions: humanActionsMax,
-            dwellMinMs: humanDwellMinMs,
-            dwellMaxMs: humanDwellMaxMs,
-            currentUrl: current.url,
-            pagesVisited: pages.length,
-            onEvent: async (eventPayload) => {
-              await reportProgress(progressCallback, eventPayload);
+          const navigationStartedAt = Date.now();
+          try {
+            const response = await page.goto(current.url, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
+            const navigationElapsedMs = Date.now() - navigationStartedAt;
+            status = response ? response.status() : null;
+            pacer.markResponse(status);
+            if (adaptiveNavEnabled) {
+              recoveredTimeoutStreak = 0;
+              if (navigationElapsedMs < Math.floor(navigationTimeoutMs * 0.6)) {
+                adaptiveNavigationTimeoutMs = Math.max(adaptiveNavMinMs, adaptiveNavigationTimeoutMs - adaptiveNavDecayMs);
+              }
             }
-          });
-        } else if (allowHumanBehavior && throughputMode) {
-          await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
-            currentUrl: current.url,
-            event: `Эмуляция пользователя пропущена: throughput mode (queue=${queue.length})`,
-            eventLevel: "debug"
-          });
-        } else if (allowHumanBehavior) {
-          await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
-            currentUrl: current.url,
-            event: "Эмуляция пользователя пропущена: нужно сохранить бюджет на извлечение контента",
-            eventLevel: "warn"
-          });
-        } else if (!humanBehaviorEnabled) {
-          await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
-            currentUrl: current.url,
-            event: "Эмуляция пользователя отключена конфигурацией",
-            eventLevel: "debug"
-          });
-        } else {
-          await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
-            currentUrl: current.url,
-            event: "Эмуляция пользователя пропущена для sitemap-страницы",
-            eventLevel: "debug"
-          });
+            await reportProgress(progressCallback, {
+              pagesVisited: pages.length,
+              currentUrl: current.url,
+              event: `Навигация завершена: status=${status ?? "n/a"}, elapsed=${navigationElapsedMs}мс`,
+              eventLevel: status !== null && status >= 400 ? "warn" : "debug"
+            });
+            break;
+          } catch (error) {
+            if (!isNavigationTimeoutError(error)) {
+              throw error;
+            }
+            await page.evaluate(() => window.stop()).catch(() => undefined);
+            const remainingForSalvageMs = remainingMs(pageDeadlineAt) - extractionReserveMs;
+            const salvageTimeoutMs = remainingForSalvageMs > 0
+              ? Math.max(500, Math.min(1800, remainingForSalvageMs))
+              : 0;
+            if (salvageTimeoutMs > 0) {
+              const payload = await extractPagePayload(page, current.url, siteHost, salvageTimeoutMs);
+              if (hasMeaningfulPagePayload(payload)) {
+                extractedFromTimeoutPayload = payload;
+                if (adaptiveNavEnabled) {
+                  recoveredTimeoutStreak++;
+                  if (recoveredTimeoutStreak >= 2) {
+                    adaptiveNavigationTimeoutMs = adaptiveNavMinMs;
+                  }
+                }
+                await reportProgress(progressCallback, {
+                  pagesVisited: pages.length,
+                  currentUrl: current.url,
+                  event: `Навигация timeout, но контент уже в DOM: titleLen=${payload.title.length}, textLen=${payload.text.length}, links=${payload.linksFiltered.length}`,
+                  eventLevel: "warn"
+                });
+                break;
+              }
+            }
+
+            if (adaptiveNavEnabled) {
+              recoveredTimeoutStreak = 0;
+              adaptiveNavigationTimeoutMs = Math.min(timeoutMs, adaptiveNavigationTimeoutMs + adaptiveNavStepMs);
+            }
+
+            const remainingForRetryMs = Math.min(
+              timeoutMs,
+              Math.max(0, remainingMs(pageDeadlineAt) - extractionReserveMs - 500)
+            );
+            if (navigationAttempt >= adaptiveNavMaxAttempts || remainingForRetryMs < 1000) {
+              throw error;
+            }
+            await reportProgress(progressCallback, {
+              pagesVisited: pages.length,
+              currentUrl: current.url,
+              event: `Навигация timeout без контента, retry с увеличенным timeout (next<=${Math.min(remainingForRetryMs, adaptiveNavigationTimeoutMs)}мс)`,
+              eventLevel: "warn"
+            });
+          }
         }
 
-        await ensureBottomScroll(page, {
-          deadlineAt: pageDeadlineAt,
-          abortSignal,
-          pauseMs: 450,
-          currentUrl: current.url,
-          pagesVisited: pages.length,
-          onEvent: async (eventPayload) => {
-            await reportProgress(progressCallback, eventPayload);
-          }
-        });
-
-        const allowDynamicScroll = dynamicScrollEnabled && (current.source !== "sitemap" || dynamicOnSitemap);
-        const remainingBeforeDynamicMs = remainingMs(pageDeadlineAt);
-        if (allowDynamicScroll && !throughputMode && remainingBeforeDynamicMs > extractionReserveMs + 1200) {
-          const dynamicTimeBudgetMs = Math.min(dynamicBudgetMs, remainingBeforeDynamicMs - extractionReserveMs);
-          const dynamicDeadlineAt = Date.now() + dynamicTimeBudgetMs;
-          await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
-            currentUrl: current.url,
-            event: `Запуск динамического добора ссылок (budget=${dynamicTimeBudgetMs}мс)`,
-            eventLevel: "debug"
-          });
-          await discoverDynamicLinks(page, {
-            deadlineAt: Math.min(pageDeadlineAt, dynamicDeadlineAt),
+        if (extractedFromTimeoutPayload === null) {
+          const remainingBeforeChallengeMs = remainingMs(pageDeadlineAt);
+          const challengeWaitBudgetMs = remainingBeforeChallengeMs > extractionReserveMs + 1200
+            ? Math.min(12_000, remainingBeforeChallengeMs - extractionReserveMs)
+            : 0;
+          await waitForJsChallengeClearance(page, {
+            deadlineAt: pageDeadlineAt,
             abortSignal,
-            maxSteps: dynamicScrollMaxSteps,
-            stableStepsToStop: dynamicScrollStableSteps,
-            pauseMinMs: dynamicScrollPauseMinMs,
-            pauseMaxMs: dynamicScrollPauseMaxMs,
+            maxWaitMs: challengeWaitBudgetMs,
             currentUrl: current.url,
             pagesVisited: pages.length,
             onEvent: async (eventPayload) => {
               await reportProgress(progressCallback, eventPayload);
             }
           });
-        } else if (allowDynamicScroll && throughputMode) {
-          await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
+
+          const allowHumanBehavior = humanBehaviorEnabled && (current.source !== "sitemap" || humanOnSitemap);
+          const throughputMode = queue.length >= throughputQueueThreshold && current.source !== "sitemap";
+          const remainingBeforeHumanMs = remainingMs(pageDeadlineAt);
+          if (allowHumanBehavior && !throughputMode && remainingBeforeHumanMs > extractionReserveMs + 1200) {
+            const humanTimeBudgetMs = Math.min(humanBudgetMs, remainingBeforeHumanMs - extractionReserveMs);
+            const humanDeadlineAt = Date.now() + humanTimeBudgetMs;
+            await reportProgress(progressCallback, {
+              pagesVisited: pages.length,
+              currentUrl: current.url,
+              event: `Запуск эмуляции пользовательского поведения (budget=${humanTimeBudgetMs}мс)`,
+              eventLevel: "debug"
+            });
+            await emulateHumanBehavior(page, {
+              deadlineAt: Math.min(pageDeadlineAt, humanDeadlineAt),
+              abortSignal,
+              minActions: humanActionsMin,
+              maxActions: humanActionsMax,
+              dwellMinMs: humanDwellMinMs,
+              dwellMaxMs: humanDwellMaxMs,
+              currentUrl: current.url,
+              pagesVisited: pages.length,
+              onEvent: async (eventPayload) => {
+                await reportProgress(progressCallback, eventPayload);
+              }
+            });
+          } else if (allowHumanBehavior && throughputMode) {
+            await reportProgress(progressCallback, {
+              pagesVisited: pages.length,
+              currentUrl: current.url,
+              event: `Эмуляция пользователя пропущена: throughput mode (queue=${queue.length})`,
+              eventLevel: "debug"
+            });
+          } else if (allowHumanBehavior) {
+            await reportProgress(progressCallback, {
+              pagesVisited: pages.length,
+              currentUrl: current.url,
+              event: "Эмуляция пользователя пропущена: нужно сохранить бюджет на извлечение контента",
+              eventLevel: "warn"
+            });
+          } else if (!humanBehaviorEnabled) {
+            await reportProgress(progressCallback, {
+              pagesVisited: pages.length,
+              currentUrl: current.url,
+              event: "Эмуляция пользователя отключена конфигурацией",
+              eventLevel: "debug"
+            });
+          } else {
+            await reportProgress(progressCallback, {
+              pagesVisited: pages.length,
+              currentUrl: current.url,
+              event: "Эмуляция пользователя пропущена для sitemap-страницы",
+              eventLevel: "debug"
+            });
+          }
+
+          await ensureBottomScroll(page, {
+            deadlineAt: pageDeadlineAt,
+            abortSignal,
+            pauseMs: 450,
             currentUrl: current.url,
-            event: `Динамический добор ссылок пропущен: throughput mode (queue=${queue.length})`,
-            eventLevel: "debug"
-          });
-        } else if (!dynamicScrollEnabled) {
-          await reportProgress(progressCallback, {
             pagesVisited: pages.length,
-            currentUrl: current.url,
-            event: "Динамический добор ссылок отключен конфигурацией",
-            eventLevel: "debug"
+            onEvent: async (eventPayload) => {
+              await reportProgress(progressCallback, eventPayload);
+            }
           });
+
+          const allowDynamicScroll = dynamicScrollEnabled && (current.source !== "sitemap" || dynamicOnSitemap);
+          const remainingBeforeDynamicMs = remainingMs(pageDeadlineAt);
+          if (allowDynamicScroll && !throughputMode && remainingBeforeDynamicMs > extractionReserveMs + 1200) {
+            const dynamicTimeBudgetMs = Math.min(dynamicBudgetMs, remainingBeforeDynamicMs - extractionReserveMs);
+            const dynamicDeadlineAt = Date.now() + dynamicTimeBudgetMs;
+            await reportProgress(progressCallback, {
+              pagesVisited: pages.length,
+              currentUrl: current.url,
+              event: `Запуск динамического добора ссылок (budget=${dynamicTimeBudgetMs}мс)`,
+              eventLevel: "debug"
+            });
+            await discoverDynamicLinks(page, {
+              deadlineAt: Math.min(pageDeadlineAt, dynamicDeadlineAt),
+              abortSignal,
+              maxSteps: dynamicScrollMaxSteps,
+              stableStepsToStop: dynamicScrollStableSteps,
+              pauseMinMs: dynamicScrollPauseMinMs,
+              pauseMaxMs: dynamicScrollPauseMaxMs,
+              currentUrl: current.url,
+              pagesVisited: pages.length,
+              onEvent: async (eventPayload) => {
+                await reportProgress(progressCallback, eventPayload);
+              }
+            });
+          } else if (allowDynamicScroll && throughputMode) {
+            await reportProgress(progressCallback, {
+              pagesVisited: pages.length,
+              currentUrl: current.url,
+              event: `Динамический добор ссылок пропущен: throughput mode (queue=${queue.length})`,
+              eventLevel: "debug"
+            });
+          } else if (!dynamicScrollEnabled) {
+            await reportProgress(progressCallback, {
+              pagesVisited: pages.length,
+              currentUrl: current.url,
+              event: "Динамический добор ссылок отключен конфигурацией",
+              eventLevel: "debug"
+            });
+          } else {
+            await reportProgress(progressCallback, {
+              pagesVisited: pages.length,
+              currentUrl: current.url,
+              event: "Динамический добор ссылок пропущен: нужно сохранить бюджет на извлечение контента",
+              eventLevel: "warn"
+            });
+          }
         } else {
           await reportProgress(progressCallback, {
             pagesVisited: pages.length,
             currentUrl: current.url,
-            event: "Динамический добор ссылок пропущен: нужно сохранить бюджет на извлечение контента",
+            event: "Пропущены challenge/human/dynamic шаги: использован контент из уже загруженного DOM после timeout",
             eventLevel: "warn"
           });
         }
@@ -1963,7 +2086,7 @@ async function crawlSite(options) {
         const extractTimeoutMs = remainingForExtractMs > 0
           ? Math.max(1000, Math.min(6000, remainingForExtractMs))
           : 1500;
-        const payload = await extractPagePayload(page, current.url, siteHost, extractTimeoutMs);
+        const payload = extractedFromTimeoutPayload || await extractPagePayload(page, current.url, siteHost, extractTimeoutMs);
         if (payload === null) {
           title = "";
           text = "";
@@ -1981,7 +2104,7 @@ async function crawlSite(options) {
           await reportProgress(progressCallback, {
             pagesVisited: pages.length,
             currentUrl: current.url,
-            event: `Извлечен контент: titleLen=${title.length}, textLen=${text.length}, linksRaw=${payload.linksRawCount}, linksFiltered=${pageLinks.length}`,
+            event: `Извлечен контент: titleLen=${title.length}, textLen=${text.length}, linksRaw=${payload.linksRawCount ?? pageLinks.length}, linksFiltered=${pageLinks.length}`,
             eventLevel: "debug"
           });
         }
