@@ -14,6 +14,7 @@ final class FindingsRevalidator
         private readonly FindingRepository $findingRepository,
         private readonly PageRepository $pageRepository,
         private readonly FindingRevalidationRepository $findingRevalidationRepository,
+        private readonly PatternCatalog $patternCatalog,
     ) {
     }
 
@@ -27,9 +28,12 @@ final class FindingsRevalidator
 
         $checked = 0;
         $deleted = 0;
+        $updated = 0;
         $pageIdsToSync = [];
         $afterId = 0;
         $batchSize = 500;
+        $pageMatchesCache = [];
+        $matcher = new PatternMatcher($this->patternsForSource($patternSource));
 
         while (true) {
             $findings = $this->findingRepository->listForRevalidation($siteId, $patternSource, $batchSize, $afterId);
@@ -40,22 +44,41 @@ final class FindingsRevalidator
             foreach ($findings as $finding) {
                 $afterId = max($afterId, (int) ($finding['id'] ?? 0));
                 $checked++;
-                $shouldDelete = false;
                 $pageId = (int) ($finding['page_id'] ?? 0);
-
-                $fragment = trim((string) ($finding['context_excerpt'] ?? ''));
-                if ($fragment === '') {
-                    $fragment = trim((string) ($finding['matched_text'] ?? ''));
+                if ($pageId <= 0) {
+                    continue;
                 }
                 $findingId = (int) ($finding['id'] ?? 0);
-                if ($fragment !== '' && $findingId > 0 && $pageId > 0) {
-                    $content = (string) ($finding['page_content'] ?? '');
-                    $shouldDelete = !$this->containsFragment($content, $fragment);
+                if ($findingId <= 0) {
+                    continue;
                 }
 
-                if ($shouldDelete && $this->findingRepository->deleteByIdAndSite($findingId, $siteId)) {
-                    $deleted++;
-                    $pageIdsToSync[$pageId] = true;
+                if (!isset($pageMatchesCache[$pageId])) {
+                    $content = (string) ($finding['page_content'] ?? '');
+                    $pageMatchesCache[$pageId] = $this->indexMatchesByKey($matcher->match($content));
+                }
+
+                $matchKey = $this->buildMatchKey(
+                    (string) ($finding['category'] ?? ''),
+                    (string) ($finding['entity_name'] ?? ''),
+                    (string) ($finding['pattern_source'] ?? '')
+                );
+                $currentMatch = $pageMatchesCache[$pageId][$matchKey] ?? null;
+
+                if (!is_array($currentMatch)) {
+                    if ($this->findingRepository->deleteByIdAndSite($findingId, $siteId)) {
+                        $deleted++;
+                        $pageIdsToSync[$pageId] = true;
+                    }
+                } else {
+                    $didUpdate = $this->findingRepository->updateMatchDataByIdAndSite($findingId, $siteId, [
+                        'matched_text' => (string) ($currentMatch['matched_text'] ?? ''),
+                        'occurrences' => (int) ($currentMatch['occurrences'] ?? 1),
+                        'context_excerpt' => (string) ($currentMatch['context_excerpt'] ?? ''),
+                    ]);
+                    if ($didUpdate) {
+                        $updated++;
+                    }
                 }
 
                 if ($checked % 25 === 0) {
@@ -81,24 +104,37 @@ final class FindingsRevalidator
         ];
     }
 
-    private function containsFragment(string $content, string $fragment): bool
+    /** @return array<int, PatternDefinition> */
+    private function patternsForSource(string $patternSource): array
     {
-        $normalizedContent = $this->normalizeText($content);
-        $normalizedFragment = $this->normalizeText($fragment);
-        if ($normalizedContent === '' || $normalizedFragment === '') {
-            return false;
-        }
+        $patterns = $this->patternCatalog->all(true);
 
-        return mb_stripos($normalizedContent, $normalizedFragment) !== false;
+        return array_values(array_filter(
+            $patterns,
+            static fn (PatternDefinition $pattern): bool => $pattern->source === $patternSource
+        ));
     }
 
-    private function normalizeText(string $value): string
+    /**
+     * @param array<int, array<string, mixed>> $matches
+     * @return array<string, array<string, mixed>>
+     */
+    private function indexMatchesByKey(array $matches): array
     {
-        $value = trim($value);
-        if ($value === '') {
-            return '';
+        $indexed = [];
+        foreach ($matches as $match) {
+            $indexed[$this->buildMatchKey(
+                (string) ($match['category'] ?? ''),
+                (string) ($match['entity_name'] ?? ''),
+                (string) ($match['pattern_source'] ?? '')
+            )] = $match;
         }
 
-        return mb_strtolower((string) (preg_replace('/\s+/u', ' ', $value) ?? $value));
+        return $indexed;
+    }
+
+    private function buildMatchKey(string $category, string $entityName, string $patternSource): string
+    {
+        return $category . '|' . $entityName . '|' . $patternSource;
     }
 }

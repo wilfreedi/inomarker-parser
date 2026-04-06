@@ -67,7 +67,8 @@ final class Application
         $this->findingsRevalidator = new FindingsRevalidator(
             $this->findingRepository,
             $this->pageRepository,
-            $this->findingRevalidationRepository
+            $this->findingRevalidationRepository,
+            $this->patternCatalog
         );
         $this->detachedConsoleLauncher = new DetachedConsoleLauncher(
             $this->config->getString('app_base_path') . '/bin/console'

@@ -158,6 +158,8 @@ final class FindingRepository
                 f.id,
                 f.site_id,
                 f.page_id,
+                f.category,
+                f.entity_name,
                 f.pattern_source,
                 f.matched_text,
                 f.context_excerpt,
@@ -178,6 +180,27 @@ final class FindingRepository
         $stmt->execute();
 
         return $stmt->fetchAll();
+    }
+
+    /** @param array{matched_text:string,occurrences:int,context_excerpt:string} $payload */
+    public function updateMatchDataByIdAndSite(int $findingId, int $siteId, array $payload): bool
+    {
+        $stmt = $this->pdo->prepare(
+            'UPDATE findings
+             SET matched_text = :matched_text,
+                 occurrences = :occurrences,
+                 context_excerpt = :context_excerpt
+             WHERE id = :id AND site_id = :site_id'
+        );
+        $stmt->execute([
+            ':matched_text' => $payload['matched_text'],
+            ':occurrences' => max(1, (int) $payload['occurrences']),
+            ':context_excerpt' => $payload['context_excerpt'],
+            ':id' => $findingId,
+            ':site_id' => $siteId,
+        ]);
+
+        return $stmt->rowCount() > 0;
     }
 
     /** @return array<int, array<string, mixed>> */
