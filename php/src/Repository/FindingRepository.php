@@ -143,6 +143,44 @@ final class FindingRepository
     }
 
     /** @return array<int, array<string, mixed>> */
+    public function listForRevalidation(
+        int $siteId,
+        string $patternSource,
+        int $limit = 500,
+        int $afterId = 0
+    ): array {
+        $limit = max(1, $limit);
+        $afterId = max(0, $afterId);
+        $normalizedSource = $this->normalizePatternSource($patternSource);
+        $stmt = $this->pdo->prepare(
+            <<<SQL
+            SELECT
+                f.id,
+                f.site_id,
+                f.page_id,
+                f.pattern_source,
+                f.matched_text,
+                f.context_excerpt,
+                p.content AS page_content
+            FROM findings f
+            INNER JOIN pages p ON p.id = f.page_id
+            WHERE f.site_id = :site_id
+              AND f.pattern_source = :pattern_source
+              AND f.id > :after_id
+            ORDER BY f.id ASC
+            LIMIT :limit
+            SQL
+        );
+        $stmt->bindValue(':site_id', $siteId, PDO::PARAM_INT);
+        $stmt->bindValue(':pattern_source', $normalizedSource, PDO::PARAM_STR);
+        $stmt->bindValue(':after_id', $afterId, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return $stmt->fetchAll();
+    }
+
+    /** @return array<int, array<string, mixed>> */
     public function topEntitiesBySite(int $siteId, int $limit = 20): array
     {
         return $this->topEntitiesBySiteInternal($siteId, $limit, null);

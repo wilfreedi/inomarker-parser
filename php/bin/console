@@ -28,11 +28,30 @@ try {
             $app->runScanForSite($siteId);
             fwrite(STDOUT, "Scan completed for site {$siteId}\n");
             break;
+        case 'findings:revalidate':
+            $siteId = isset($argv[2]) ? (int) $argv[2] : 0;
+            $patternSource = isset($argv[3]) ? trim((string) $argv[3]) : '';
+            if ($siteId <= 0 || !in_array($patternSource, ['full', 'short'], true)) {
+                throw new InvalidArgumentException('Usage: php bin/console findings:revalidate <site_id> <full|short>');
+            }
+            $result = $app->revalidateFindingsForSite($siteId, $patternSource);
+            fwrite(
+                STDOUT,
+                sprintf(
+                    "Findings revalidated for site %d [%s]: checked=%d deleted=%d\n",
+                    $siteId,
+                    $patternSource,
+                    (int) ($result['checked'] ?? 0),
+                    (int) ($result['deleted'] ?? 0)
+                )
+            );
+            break;
         default:
             fwrite(STDERR, "Commands:\n");
             fwrite(STDERR, "  php bin/console migrate\n");
             fwrite(STDERR, "  php bin/console worker:run [--once]\n");
             fwrite(STDERR, "  php bin/console scan:site <site_id>\n");
+            fwrite(STDERR, "  php bin/console findings:revalidate <site_id> <full|short>\n");
             exit(1);
     }
 } catch (Throwable $exception) {

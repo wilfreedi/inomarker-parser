@@ -26,6 +26,8 @@ final class AppConfig
             'app_base_path' => $basePath,
             'db_path' => Env::get('DB_PATH', $basePath . '/storage/database.sqlite') ?? '',
             'regex_db_path' => Env::get('REGEX_DB_PATH', $projectRoot . '/db.json') ?? '',
+            'regex_sync_endpoint' => Env::get('REGEX_SYNC_ENDPOINT', 'https://inomarker.ru/api/v1/plugin/regex-data') ?? '',
+            'regex_sync_api_key' => Env::get('REGEX_SYNC_API_KEY', 'iw_auZA7dOvdzxlhyHZDJxSrtfCTKRvg6gUdUwyJvDi') ?? '',
             'admin_secret_password' => Env::get('ADMIN_SECRET_PASSWORD', 'лох') ?? 'лох',
             'crawler_endpoint' => Env::get('CRAWLER_ENDPOINT', 'http://crawler:3000/crawl') ?? '',
             'crawler_progress_endpoint' => Env::get('CRAWLER_PROGRESS_ENDPOINT', '') ?? '',

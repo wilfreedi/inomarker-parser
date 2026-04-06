@@ -213,8 +213,16 @@ if ($method === 'POST' && $path === '/settings') {
     $controller->updateSettings($_POST);
 }
 
+if ($method === 'POST' && $path === '/settings/regex-refresh') {
+    $controller->refreshRegexes();
+}
+
 if ($method === 'POST' && preg_match('#^/sites/(\d+)/scan$#', $path, $matches) === 1) {
     $controller->requestScan((int) $matches[1], $_POST);
+}
+
+if ($method === 'POST' && preg_match('#^/sites/(\d+)/findings/revalidate$#', $path, $matches) === 1) {
+    $controller->requestFindingsRevalidation((int) $matches[1], $_POST);
 }
 
 if ($method === 'POST' && preg_match('#^/sites/(\d+)/pause$#', $path, $matches) === 1) {

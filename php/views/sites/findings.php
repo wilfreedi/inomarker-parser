@@ -338,6 +338,11 @@ $reportDescriptions = [
                 Страница: <?= (int) ($pagination['current_page'] ?? 1) ?>
                 · Всего страниц: <?= (int) ($pagination['total_pages'] ?? 1) ?>
             </p>
+            <form method="post" action="/sites/<?= $siteId ?>/findings/revalidate" class="button-row" style="margin-bottom: 12px;">
+                <input type="hidden" name="pattern_source" value="<?= htmlspecialchars($reportKey, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>">
+                <input type="hidden" name="return_to" value="<?= htmlspecialchars($buildFindingsUrl($siteId, $currentFullPage, $currentShortPage, $activeReport), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>">
+                <button type="submit" class="warning">Перепроверить в фоне</button>
+            </form>
             <table>
                 <thead>
                 <tr>

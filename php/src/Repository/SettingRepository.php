@@ -21,6 +21,9 @@ final class SettingRepository
         'crawler_request_timeout_seconds' => '600',
         'crawler_retry_attempts' => '3',
         'crawler_retry_delay_ms' => '2500',
+        'regex_sync_status' => 'never',
+        'regex_sync_last_attempt_at' => '',
+        'regex_sync_last_error' => '',
     ];
 
     public function __construct(private readonly PDO $pdo)

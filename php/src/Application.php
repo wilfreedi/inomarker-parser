@@ -16,7 +16,10 @@ use App\Repository\SettingRepository;
 use App\Repository\SiteRepository;
 use App\Service\CrawlOrchestrator;
 use App\Service\CrawlerClient;
+use App\Service\DetachedConsoleLauncher;
+use App\Service\FindingsRevalidator;
 use App\Service\PatternCatalog;
+use App\Service\RegexSyncService;
 use App\Service\WorkerService;
 use App\Service\SiteReportService;
 use App\View\Renderer;
@@ -32,6 +35,9 @@ final class Application
     private PageRepository $pageRepository;
     private FindingRepository $findingRepository;
     private PatternCatalog $patternCatalog;
+    private RegexSyncService $regexSyncService;
+    private FindingsRevalidator $findingsRevalidator;
+    private DetachedConsoleLauncher $detachedConsoleLauncher;
     private CrawlerClient $crawlerClient;
     private CrawlOrchestrator $crawlOrchestrator;
     private SiteReportService $siteReportService;
@@ -50,6 +56,18 @@ final class Application
         $this->findingRepository = new FindingRepository($this->pdo);
 
         $this->patternCatalog = new PatternCatalog($this->config->getString('regex_db_path'));
+        $this->regexSyncService = new RegexSyncService(
+            $this->config->getString('regex_sync_endpoint'),
+            $this->config->getString('regex_sync_api_key'),
+            $this->config->getString('regex_db_path')
+        );
+        $this->findingsRevalidator = new FindingsRevalidator(
+            $this->findingRepository,
+            $this->pageRepository
+        );
+        $this->detachedConsoleLauncher = new DetachedConsoleLauncher(
+            $this->config->getString('app_base_path') . '/bin/console'
+        );
         $this->crawlerClient = new CrawlerClient(
             $this->config->getString('crawler_endpoint'),
             null,
@@ -89,6 +107,8 @@ final class Application
             $this->pageRepository,
             $this->siteReportService,
             $this->renderer,
+            $this->regexSyncService,
+            $this->detachedConsoleLauncher,
             $this->config->getString('crawler_progress_token'),
             $this->config->getString('admin_secret_password')
         );
@@ -126,5 +146,15 @@ final class Application
             'retry_attempts' => (int) ($settings['crawler_retry_attempts'] ?? 3),
             'retry_delay_ms' => (int) ($settings['crawler_retry_delay_ms'] ?? 2500),
         ]);
+    }
+
+    public function revalidateFindingsForSite(int $siteId, string $patternSource): array
+    {
+        $site = $this->siteRepository->findById($siteId);
+        if ($site === null) {
+            throw new \RuntimeException("Site {$siteId} not found");
+        }
+
+        return $this->findingsRevalidator->revalidateSite($siteId, $patternSource);
     }
 }

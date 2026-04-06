@@ -9,7 +9,9 @@ use App\Repository\CrawlRunRepository;
 use App\Repository\RunRepository;
 use App\Repository\SettingRepository;
 use App\Repository\SiteRepository;
+use App\Service\RegexSyncService;
 use App\Repository\PageRepository;
+use App\Service\DetachedConsoleLauncher;
 use App\Service\SiteReportService;
 use App\View\Renderer;
 
@@ -24,6 +26,8 @@ final class AdminController
         private readonly PageRepository $pageRepository,
         private readonly SiteReportService $siteReportService,
         private readonly Renderer $renderer,
+        private readonly RegexSyncService $regexSyncService,
+        private readonly DetachedConsoleLauncher $detachedConsoleLauncher,
         private readonly string $crawlerProgressToken = '',
         private readonly string $adminSecretPassword = 'лох',
     ) {
@@ -127,8 +131,15 @@ final class AdminController
 
     public function settings(?string $notice, ?string $error): string
     {
+        $settings = $this->settingRepository->all();
+
         $content = $this->renderer->render('settings', [
-            'settings' => $this->settingRepository->all(),
+            'settings' => $settings,
+            'regexSyncMeta' => [
+                'status' => (string) ($settings['regex_sync_status'] ?? 'never'),
+                'last_attempt_at' => (string) ($settings['regex_sync_last_attempt_at'] ?? ''),
+                'last_error' => (string) ($settings['regex_sync_last_error'] ?? ''),
+            ],
         ]);
 
         return $this->renderLayout('Settings', $content, '/settings', $notice, $error);
@@ -481,6 +492,54 @@ final class AdminController
 
         $this->settingRepository->updateMany($settings);
         $this->redirectWithMessage('/settings', 'Настройки сохранены', null);
+    }
+
+    public function refreshRegexes(): void
+    {
+        $now = gmdate('c');
+
+        try {
+            $this->regexSyncService->refresh();
+            $this->settingRepository->updateMany([
+                'regex_sync_status' => 'success',
+                'regex_sync_last_attempt_at' => $now,
+                'regex_sync_last_error' => '',
+            ]);
+            $this->redirectWithMessage('/settings', 'Регулярки обновлены', null);
+        } catch (\Throwable $exception) {
+            $this->settingRepository->updateMany([
+                'regex_sync_status' => 'error',
+                'regex_sync_last_attempt_at' => $now,
+                'regex_sync_last_error' => $exception->getMessage(),
+            ]);
+            $this->redirectWithMessage('/settings', null, $exception->getMessage());
+        }
+    }
+
+    /** @param array<string, mixed> $post */
+    public function requestFindingsRevalidation(int $siteId, array $post): void
+    {
+        $site = $this->siteRepository->findById($siteId);
+        if ($site === null) {
+            $this->redirectWithMessage('/sites', null, 'Сайт не найден');
+        }
+
+        $returnPath = $this->resolveReturnPath($post, "/sites/{$siteId}/findings");
+        $patternSource = trim(mb_strtolower((string) ($post['pattern_source'] ?? 'full')));
+        if (!in_array($patternSource, ['full', 'short'], true)) {
+            $this->redirectWithMessage($returnPath, null, 'Некорректный тип совпадений для перепроверки');
+        }
+
+        try {
+            $this->detachedConsoleLauncher->launch(['findings:revalidate', $siteId, $patternSource]);
+            $this->redirectWithMessage(
+                $returnPath,
+                sprintf('Фоновая перепроверка %s-совпадений запущена', mb_strtoupper($patternSource)),
+                null
+            );
+        } catch (\Throwable $exception) {
+            $this->redirectWithMessage($returnPath, null, $exception->getMessage());
+        }
     }
 
     /** @return array<string, mixed> */

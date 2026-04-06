@@ -3,6 +3,27 @@
 declare(strict_types=1);
 
 /** @var array<string, string> $settings */
+/** @var array{status:string,last_attempt_at:string,last_error:string} $regexSyncMeta */
+
+$regexStatus = $regexSyncMeta['status'] ?? 'never';
+$regexStatusLabels = [
+    'never' => 'Не запускалось',
+    'success' => 'Успешно',
+    'error' => 'Ошибка',
+];
+$regexStatusLabel = $regexStatusLabels[$regexStatus] ?? $regexStatus;
+$regexLastAttemptRaw = trim((string) ($regexSyncMeta['last_attempt_at'] ?? ''));
+$regexLastAttemptLabel = 'Еще не было';
+
+if ($regexLastAttemptRaw !== '') {
+    try {
+        $regexLastAttemptLabel = (new DateTimeImmutable($regexLastAttemptRaw))
+            ->setTimezone(new DateTimeZone(date_default_timezone_get()))
+            ->format('d.m.Y H:i:s');
+    } catch (Exception) {
+        $regexLastAttemptLabel = $regexLastAttemptRaw;
+    }
+}
 ?>
 <div class="grid">
     <section class="card full">
@@ -10,7 +31,15 @@ declare(strict_types=1);
             <div>
                 <h2 class="page-title">Settings</h2>
                 <p class="page-subtitle">Конфигурация воркера и параметров crawler.</p>
+                <p class="page-subtitle">Статус обновления регулярок: <strong><?= htmlspecialchars($regexStatusLabel, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></strong></p>
+                <p class="page-subtitle">Последняя попытка: <?= htmlspecialchars($regexLastAttemptLabel, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></p>
+                <?php if (($regexSyncMeta['last_error'] ?? '') !== '' && $regexStatus === 'error'): ?>
+                    <p class="page-subtitle">Ошибка: <?= htmlspecialchars((string) $regexSyncMeta['last_error'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></p>
+                <?php endif; ?>
             </div>
+            <form method="post" action="/settings/regex-refresh">
+                <button type="submit">Обновить регулярки</button>
+            </form>
         </div>
     </section>
 
