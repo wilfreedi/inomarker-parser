@@ -20,7 +20,8 @@ const BLOCKED_FILE_EXTENSIONS = new Set([
 const TRACKING_QUERY_PARAMS = new Set([
   "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "utm_referrer",
   "gclid", "fbclid", "yclid", "ysclid", "ya_src", "ref", "from", "openstat",
-  "amp", "amp_gsa", "mibextid", "__cf_chl_rt_tk", "lang", "clid"
+  "amp", "amp_gsa", "mibextid", "__cf_chl_rt_tk", "lang", "clid",
+  "date"
 ]);
 const XML_ENTITIES = {
   "&amp;": "&",
@@ -64,6 +65,10 @@ const DEFAULT_BLOCKED_RESOURCE_TYPES = new Set([
   "font",
   "stylesheet"
 ]);
+const MAX_LINKS_PER_PAGE = Math.max(
+  20,
+  Number(process.env.CRAWLER_MAX_LINKS_PER_PAGE || 160)
+);
 const progressDebugLastSentByRun = new Map();
 const progressQueueByRun = new Map();
 
@@ -970,7 +975,11 @@ function createRequestPacer(options) {
 
 function extractLinks(rawLinks, baseUrl, siteHost) {
   const links = [];
+  const seen = new Set();
   for (const href of rawLinks) {
+    if (links.length >= MAX_LINKS_PER_PAGE) {
+      break;
+    }
     if (!href || typeof href !== "string") {
       continue;
     }
@@ -979,7 +988,12 @@ function extractLinks(rawLinks, baseUrl, siteHost) {
       if (!isCrawlCandidateUrl(parsed, siteHost)) {
         continue;
       }
-      links.push(normalizeUrl(parsed.toString()));
+      const normalized = normalizeUrl(parsed.toString());
+      if (seen.has(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      links.push(normalized);
     } catch (_) {
       continue;
     }
