@@ -1000,18 +1000,22 @@ async function extractPagePayload(page, pageUrl, siteHost, timeoutMs) {
       };
     }
 
-    const contentRoot = root.cloneNode(true);
-    contentRoot
-      .querySelectorAll(".inomarker-footnotes, script, style, noscript, template")
-      .forEach((node) => node.remove());
-
-    const links = Array.from(contentRoot.querySelectorAll("a[href]"))
+    const links = Array.from(root.querySelectorAll("a[href]"))
+      .filter((node) => !node.closest(".inomarker-footnotes"))
       .map((node) => node.getAttribute("href"))
       .filter(Boolean);
 
-    const pageText = String(contentRoot.textContent || "")
+    const footnotes = Array.from(root.querySelectorAll(".inomarker-footnotes"));
+    const prevDisplay = footnotes.map((node) => node.style.display);
+    footnotes.forEach((node) => {
+      node.style.display = "none";
+    });
+    const pageText = String(root.innerText || "")
       .replace(/\s+/g, " ")
       .trim();
+    footnotes.forEach((node, index) => {
+      node.style.display = prevDisplay[index];
+    });
 
     return {
       title: document.title || "",
