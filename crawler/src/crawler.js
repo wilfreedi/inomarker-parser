@@ -1000,39 +1000,16 @@ async function extractPagePayload(page, pageUrl, siteHost, timeoutMs) {
       };
     }
 
-    const links = Array.from(root.querySelectorAll("a[href]"))
-      .filter((node) => !node.closest(".inomarker-footnotes"))
+    const contentRoot = root.cloneNode(true);
+    contentRoot
+      .querySelectorAll(".inomarker-footnotes, script, style, noscript, template")
+      .forEach((node) => node.remove());
+
+    const links = Array.from(contentRoot.querySelectorAll("a[href]"))
       .map((node) => node.getAttribute("href"))
       .filter(Boolean);
 
-    const excludedTags = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"]);
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode(textNode) {
-        const value = String(textNode.nodeValue || "").trim();
-        if (value === "") {
-          return NodeFilter.FILTER_REJECT;
-        }
-        const parent = textNode.parentElement;
-        if (!parent) {
-          return NodeFilter.FILTER_REJECT;
-        }
-        if (excludedTags.has(parent.tagName)) {
-          return NodeFilter.FILTER_REJECT;
-        }
-        if (parent.closest(".inomarker-footnotes")) {
-          return NodeFilter.FILTER_REJECT;
-        }
-        return NodeFilter.FILTER_ACCEPT;
-      }
-    });
-    const textChunks = [];
-    let currentNode = walker.nextNode();
-    while (currentNode) {
-      textChunks.push(String(currentNode.nodeValue || ""));
-      currentNode = walker.nextNode();
-    }
-
-    const pageText = textChunks.join(" ")
+    const pageText = String(contentRoot.textContent || "")
       .replace(/\s+/g, " ")
       .trim();
 
