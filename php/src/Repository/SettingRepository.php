@@ -18,6 +18,7 @@ final class SettingRepository
         'crawler_max_depth' => '15',
         'crawler_timeout_ms' => '45000',
         'crawler_page_pause_ms' => '1500',
+        'crawler_max_duration_seconds' => '3600',
         'crawler_request_timeout_seconds' => '600',
         'crawler_retry_attempts' => '3',
         'crawler_retry_delay_ms' => '2500',

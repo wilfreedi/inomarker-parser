@@ -150,6 +150,39 @@ final class CrawlerClientTest extends TestCase
         self::assertSame(90000, $decoded['maxDurationMs']);
     }
 
+    public function testUsesExplicitMaxDurationWhenConfigured(): void
+    {
+        $capturedPayload = null;
+        $client = new CrawlerClient(
+            'http://crawler.local/crawl',
+            static function (string $_endpoint, string $payload) use (&$capturedPayload): array {
+                $capturedPayload = $payload;
+                return [
+                    'ok' => true,
+                    'status' => 200,
+                    'body' => json_encode(['pages' => [['url' => 'https://example.org/long-run', 'text' => 'ok']]], JSON_THROW_ON_ERROR),
+                    'error' => null,
+                    'curl_failed' => false,
+                ];
+            }
+        );
+
+        $client->crawl('https://example.org', [
+            'max_pages' => 100000,
+            'max_depth' => 20,
+            'timeout_ms' => 30000,
+            'page_pause_ms' => 100,
+            'max_duration_seconds' => 3600,
+            'request_timeout_seconds' => 600,
+            'retry_attempts' => 1,
+            'retry_delay_ms' => 1,
+        ]);
+
+        self::assertIsString($capturedPayload);
+        $decoded = json_decode((string) $capturedPayload, true, 512, JSON_THROW_ON_ERROR);
+        self::assertSame(3600000, $decoded['maxDurationMs']);
+    }
+
     public function testIncludesProgressCallbackWhenConfigured(): void
     {
         $capturedPayload = null;

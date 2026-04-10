@@ -1,5 +1,6 @@
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+const { decodeResponseBody, resolveSitemapDiscoveryMaxMs } = require("./sitemap-utils");
 
 puppeteer.use(StealthPlugin());
 
@@ -345,8 +346,9 @@ async function fetchTextWithHttp(url, timeoutMs) {
         "Pragma": "no-cache"
       }
     });
-    const body = await response.text();
+    const arrayBuffer = await response.arrayBuffer();
     const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+    const body = decodeResponseBody(Buffer.from(arrayBuffer), { url, contentType });
 
     return {
       body,
@@ -1197,6 +1199,7 @@ async function discoverUrlsFromSitemaps(options) {
   const maxSitemapDepth = Math.max(1, Number(options.maxSitemapDepth || 6));
   const maxDiscoveredUrls = Math.max(1, Number(options.maxDiscoveredUrls || 50_000));
   const discoveryDeadlineAt = Math.min(crawlDeadlineAt, Date.now() + discoveryMaxMs);
+  const remainingDiscoveryMs = () => Math.max(0, discoveryDeadlineAt - Date.now());
 
   /** @type {Array<{url:string,depth:number}>} */
   const queue = [];
@@ -1240,9 +1243,21 @@ async function discoverUrlsFromSitemaps(options) {
     event: "Проверка robots.txt и sitemap",
     eventLevel: "info"
   });
-  const robotsHardTimeoutMs = Math.max(4_000, requestTimeoutMs + 5_000);
+  const robotsRemainingMs = remainingDiscoveryMs();
+  if (robotsRemainingMs < 1_000) {
+    await reportProgress(progressCallback, {
+      pagesVisited,
+      currentUrl: robotsUrl,
+      event: "Сбор sitemap остановлен до старта: исчерпан бюджет discovery",
+      eventLevel: "warn"
+    });
+
+    return [];
+  }
+  const robotsRequestTimeoutMs = Math.max(1_000, Math.min(requestTimeoutMs, Math.max(1_000, robotsRemainingMs - 1_000)));
+  const robotsHardTimeoutMs = Math.max(1_000, Math.min(robotsRemainingMs, robotsRequestTimeoutMs + 2_000));
   const robotsFetch = await withHardTimeout(
-    fetchTextWithTimeout(robotsUrl, requestTimeoutMs, browserFetch),
+    fetchTextWithTimeout(robotsUrl, robotsRequestTimeoutMs, browserFetch),
     robotsHardTimeoutMs,
     () => ({
       body: "",
@@ -1297,7 +1312,8 @@ async function discoverUrlsFromSitemaps(options) {
     && fetchedSitemapFiles < maxSitemapFiles
     && discovered.length < maxDiscoveredUrls
   ) {
-    if ((abortSignal && abortSignal.aborted) || Date.now() >= discoveryDeadlineAt) {
+    const discoveryRemainingMs = remainingDiscoveryMs();
+    if ((abortSignal && abortSignal.aborted) || discoveryRemainingMs <= 0) {
       discoveryStopReason = (abortSignal && abortSignal.aborted) ? "aborted" : "deadline_reached";
       break;
     }
@@ -1324,10 +1340,21 @@ async function discoverUrlsFromSitemaps(options) {
       continue;
     }
 
-    const sitemapHardTimeoutMs = Math.max(5_000, requestTimeoutMs + 7_000);
+    if (discoveryRemainingMs < 1_000) {
+      discoveryStopReason = "deadline_reached";
+      break;
+    }
+    const sitemapRequestTimeoutMs = Math.max(
+      1_000,
+      Math.min(requestTimeoutMs, Math.max(1_000, discoveryRemainingMs - 1_000))
+    );
+    const sitemapHardTimeoutMs = Math.max(
+      1_000,
+      Math.min(discoveryRemainingMs, sitemapRequestTimeoutMs + 2_000)
+    );
     const sitemapFetchStartedAt = Date.now();
     const sitemapFetch = await withHardTimeout(
-      fetchTextWithTimeout(current.url, requestTimeoutMs, browserFetch),
+      fetchTextWithTimeout(current.url, sitemapRequestTimeoutMs, browserFetch),
       sitemapHardTimeoutMs,
       () => ({
         body: "",
@@ -1623,11 +1650,7 @@ async function crawlSite(options) {
   const sitemapMaxDepth = Math.max(1, Number(process.env.CRAWLER_SITEMAP_MAX_DEPTH || 6));
   const sitemapRequestTimeoutMs = Math.max(1000, Number(process.env.CRAWLER_SITEMAP_REQUEST_TIMEOUT_MS || 8000));
   const sitemapDiscoveryMaxMsConfigured = Number(process.env.CRAWLER_SITEMAP_DISCOVERY_MAX_MS || 0);
-  const sitemapDiscoveryMaxMsDefault = Math.max(60_000, Math.min(240_000, Math.floor(maxDurationMs * 0.45)));
-  const sitemapDiscoveryMaxMs = Math.max(
-    180_000,
-    sitemapDiscoveryMaxMsConfigured > 0 ? sitemapDiscoveryMaxMsConfigured : sitemapDiscoveryMaxMsDefault
-  );
+  const sitemapDiscoveryMaxMs = resolveSitemapDiscoveryMaxMs(maxDurationMs, sitemapDiscoveryMaxMsConfigured);
   const sitemapMaxUrls = Math.max(
     maxPages,
     Number(process.env.CRAWLER_SITEMAP_MAX_URLS || maxPages)

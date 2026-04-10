@@ -29,14 +29,19 @@ final class CrawlerClient
     {
         $requestTimeoutSeconds = max(30, (int) ($options['request_timeout_seconds'] ?? 300));
         $pageTimeoutMs = max(5_000, (int) ($options['timeout_ms'] ?? 30_000));
-        $clientSafetyBufferMs = max(
-            30_000,
-            min(120_000, (int) round($requestTimeoutSeconds * 1000 * 0.1))
-        );
-        $maxDurationMs = max(
-            $pageTimeoutMs,
-            ($requestTimeoutSeconds * 1000) - $clientSafetyBufferMs
-        );
+        $maxDurationSeconds = max(0, (int) ($options['max_duration_seconds'] ?? 0));
+        if ($maxDurationSeconds > 0) {
+            $maxDurationMs = max($pageTimeoutMs, $maxDurationSeconds * 1000);
+        } else {
+            $clientSafetyBufferMs = max(
+                30_000,
+                min(120_000, (int) round($requestTimeoutSeconds * 1000 * 0.1))
+            );
+            $maxDurationMs = max(
+                $pageTimeoutMs,
+                ($requestTimeoutSeconds * 1000) - $clientSafetyBufferMs
+            );
+        }
 
         $payloadData = [
             'siteUrl' => $siteUrl,
@@ -65,7 +70,10 @@ final class CrawlerClient
         $retryDelayMs = max(100, (int) ($options['retry_delay_ms'] ?? 1500));
         $lastErrorMessage = 'Crawler request failed';
 
-        $httpTimeoutSeconds = max($requestTimeoutSeconds + 30, (int) ceil(($maxDurationMs + 15_000) / 1000));
+        $httpTimeoutSeconds = max(
+            $requestTimeoutSeconds,
+            (int) ceil(($maxDurationMs + 30_000) / 1000)
+        );
         for ($attempt = 1; $attempt <= $attempts; $attempt++) {
             $result = $this->performRequest($payload, $httpTimeoutSeconds);
             if ($result['ok']) {

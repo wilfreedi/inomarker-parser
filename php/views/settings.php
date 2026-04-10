@@ -91,7 +91,11 @@ if ($regexLastAttemptRaw !== '') {
             <p class="muted">Пауза применяется строго между запросами к следующей странице.</p>
             <p class="muted">На каждой странице crawler имитирует пользователя (скролл/клики), держит страницу 2–10 сек и принудительно уходит при 30+ сек.</p>
             <label>
-                Максимальная длительность одного запуска (секунды)
+                Лимит времени одного обхода (секунды)
+                <input type="number" min="30" step="30" name="crawler_max_duration_seconds" value="<?= (int) ($settings['crawler_max_duration_seconds'] ?? 3600) ?>">
+            </label>
+            <label>
+                Таймаут ожидания ответа от crawler (секунды)
                 <input type="number" min="30" step="10" name="crawler_request_timeout_seconds" value="<?= (int) ($settings['crawler_request_timeout_seconds'] ?? 600) ?>">
             </label>
             <label>

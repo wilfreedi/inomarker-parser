@@ -467,6 +467,7 @@ final class AdminController
             'crawler_max_depth',
             'crawler_timeout_ms',
             'crawler_page_pause_ms',
+            'crawler_max_duration_seconds',
             'crawler_request_timeout_seconds',
             'crawler_retry_attempts',
             'crawler_retry_delay_ms',
@@ -487,6 +488,10 @@ final class AdminController
                 continue;
             }
             if ($key === 'crawler_request_timeout_seconds') {
+                $settings[$key] = max(30, $value);
+                continue;
+            }
+            if ($key === 'crawler_max_duration_seconds') {
                 $settings[$key] = max(30, $value);
                 continue;
             }
