@@ -31,13 +31,18 @@ final class PatternMatcher
         $results = [];
         foreach ($this->patterns as $patternDefinition) {
             $pattern = $patternDefinition->toPregPattern();
-            $matchCount = @preg_match_all($pattern, $normalizedText, $matches, PREG_OFFSET_CAPTURE);
-            if ($matchCount === false || $matchCount === 0) {
+            $firstMatchCount = @preg_match($pattern, $normalizedText, $matches, PREG_OFFSET_CAPTURE);
+            if ($firstMatchCount === false || $firstMatchCount === 0) {
                 continue;
             }
 
-            $firstMatch = $matches[0][0][0] ?? '';
-            $firstOffset = (int) ($matches[0][0][1] ?? 0);
+            $matchCount = @preg_match_all($pattern, $normalizedText);
+            if ($matchCount === false || $matchCount === 0) {
+                $matchCount = 1;
+            }
+
+            $firstMatch = $matches[0][0] ?? '';
+            $firstOffset = (int) ($matches[0][1] ?? 0);
             $resultKey = $patternDefinition->category . '|' . $patternDefinition->entityName . '|' . $patternDefinition->source;
 
             if (isset($results[$resultKey])) {

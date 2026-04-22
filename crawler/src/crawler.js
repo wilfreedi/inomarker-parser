@@ -1718,6 +1718,7 @@ async function crawlSite(options) {
   const humanDwellMaxMs = Math.max(humanDwellMinMs, Number(process.env.CRAWLER_HUMAN_DWELL_MAX_MS || 10000));
   const humanBehaviorEnabled = String(process.env.CRAWLER_HUMAN_BEHAVIOR_ENABLED || "0") === "1";
   const dynamicScrollEnabled = String(process.env.CRAWLER_DYNAMIC_SCROLL_ENABLED || "1") !== "0";
+  const baseScrollEnabled = String(process.env.CRAWLER_BASE_SCROLL_ENABLED || "0") === "1";
   const dynamicScrollMaxSteps = Math.max(0, Number(process.env.CRAWLER_DYNAMIC_SCROLL_MAX_STEPS || 8));
   const dynamicScrollStableSteps = Math.max(1, Number(process.env.CRAWLER_DYNAMIC_SCROLL_STABLE_STEPS || 2));
   const dynamicScrollPauseMinMs = Math.max(100, Number(process.env.CRAWLER_DYNAMIC_SCROLL_PAUSE_MIN_MS || 500));
@@ -1857,7 +1858,7 @@ async function crawlSite(options) {
     await reportProgress(progressCallback, {
       pagesVisited: 0,
       currentUrl: startUrl,
-      event: `Конфиг обхода: maxPages=${maxPages}, maxDepth=${maxDepth}, pagePauseMs=${pagePauseMs}, timeoutMs=${timeoutMs}, pageMaxMs=${pageMaxMs}, maxDurationMs=${maxDurationMs}, minRequestIntervalMs=${minRequestIntervalMs}, resourceBlocking=${resourcePolicy.enabled ? "1" : "0"}, blockedTypes=${resourcePolicy.blockedResourceTypes.size}, blockThirdPartyAssets=${resourcePolicy.blockThirdPartyAssets ? "1" : "0"}, sitemapEnabled=${sitemapEnabled ? "1" : "0"}, dynamicScroll=${dynamicScrollEnabled ? "1" : "0"}, humanBehavior=${humanBehaviorEnabled ? "1" : "0"}, sitemapDiscoveryMaxMs=${sitemapDiscoveryMaxMs}, sitemapMaxFiles=${sitemapMaxFiles}, sitemapMaxUrls=${sitemapMaxUrls}`,
+      event: `Конфиг обхода: maxPages=${maxPages}, maxDepth=${maxDepth}, pagePauseMs=${pagePauseMs}, timeoutMs=${timeoutMs}, pageMaxMs=${pageMaxMs}, maxDurationMs=${maxDurationMs}, minRequestIntervalMs=${minRequestIntervalMs}, resourceBlocking=${resourcePolicy.enabled ? "1" : "0"}, blockedTypes=${resourcePolicy.blockedResourceTypes.size}, blockThirdPartyAssets=${resourcePolicy.blockThirdPartyAssets ? "1" : "0"}, sitemapEnabled=${sitemapEnabled ? "1" : "0"}, baseScroll=${baseScrollEnabled ? "1" : "0"}, dynamicScroll=${dynamicScrollEnabled ? "1" : "0"}, humanBehavior=${humanBehaviorEnabled ? "1" : "0"}, sitemapDiscoveryMaxMs=${sitemapDiscoveryMaxMs}, sitemapMaxFiles=${sitemapMaxFiles}, sitemapMaxUrls=${sitemapMaxUrls}`,
       eventLevel: "debug"
     });
 
@@ -2144,16 +2145,25 @@ async function crawlSite(options) {
             });
           }
 
-          await ensureBottomScroll(page, {
-            deadlineAt: pageDeadlineAt,
-            abortSignal,
-            pauseMs: 450,
-            currentUrl: current.url,
-            pagesVisited: completedPages,
-            onEvent: async (eventPayload) => {
-              await reportProgress(progressCallback, eventPayload);
-            }
-          });
+          if (baseScrollEnabled) {
+            await ensureBottomScroll(page, {
+              deadlineAt: pageDeadlineAt,
+              abortSignal,
+              pauseMs: 450,
+              currentUrl: current.url,
+              pagesVisited: completedPages,
+              onEvent: async (eventPayload) => {
+                await reportProgress(progressCallback, eventPayload);
+              }
+            });
+          } else {
+            await reportProgress(progressCallback, {
+              pagesVisited: completedPages,
+              currentUrl: current.url,
+              event: "Базовый скролл отключен конфигурацией",
+              eventLevel: "debug"
+            });
+          }
 
           const allowDynamicScroll = dynamicScrollEnabled && (current.source !== "sitemap" || dynamicOnSitemap);
           const remainingBeforeDynamicMs = remainingMs(pageDeadlineAt);

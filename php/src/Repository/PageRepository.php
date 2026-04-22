@@ -53,7 +53,9 @@ final class PageRepository
     public function findBySiteAndUrl(int $siteId, string $url): ?array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id, site_id, url, is_matched, matched_entities, crawled_at FROM pages WHERE site_id = :site_id AND url = :url'
+            'SELECT id, site_id, url, content_hash, http_status, is_matched, matched_entities, crawled_at
+             FROM pages
+             WHERE site_id = :site_id AND url = :url'
         );
         $stmt->execute([
             ':site_id' => $siteId,
@@ -62,6 +64,24 @@ final class PageRepository
         $row = $stmt->fetch();
 
         return $row === false ? null : $row;
+    }
+
+    /** @param array<string, mixed> $page */
+    public function touchUnchanged(int $pageId, array $page): void
+    {
+        $stmt = $this->pdo->prepare(
+            "UPDATE pages
+             SET title = :title,
+                 http_status = :http_status,
+                 crawled_at = :crawled_at
+             WHERE id = :id"
+        );
+        $stmt->execute([
+            ':title' => (string) ($page['title'] ?? ''),
+            ':http_status' => isset($page['status']) ? (int) $page['status'] : null,
+            ':crawled_at' => gmdate('Y-m-d H:i:s'),
+            ':id' => $pageId,
+        ]);
     }
 
     /** @param array<int, string> $entityNames */

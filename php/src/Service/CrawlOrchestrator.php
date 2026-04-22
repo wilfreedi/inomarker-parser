@@ -33,6 +33,7 @@ final class CrawlOrchestrator
         $pagesWithMatches = 0;
         $validPagesTotal = 0;
         $skippedMatchedPages = 0;
+        $skippedUnchangedPages = 0;
 
         try {
             $this->siteRepository->appendProgressLog($siteId, 'Отправлен запрос в crawler-сервис');
@@ -70,6 +71,16 @@ final class CrawlOrchestrator
                     $this->siteRepository->appendProgressLog(
                         $siteId,
                         sprintf('Страница уже помечена как matched, пропуск: %s', $url),
+                        'debug'
+                    );
+                    continue;
+                }
+                if ($result['skipped_unchanged']) {
+                    $skippedUnchangedPages++;
+                    $validPagesTotal++;
+                    $this->siteRepository->appendProgressLog(
+                        $siteId,
+                        sprintf('Страница не изменилась, regex повторно не запускались: %s', $url),
                         'debug'
                     );
                     continue;
@@ -128,10 +139,10 @@ final class CrawlOrchestrator
                     $this->siteRepository->markCompleted($siteId);
 
                     return [
-                        'pages_total' => $pagesTotal,
-                        'pages_with_matches' => 0,
-                    ];
-                }
+                    'pages_total' => $pagesTotal,
+                    'pages_with_matches' => 0,
+                ];
+            }
                 throw new \RuntimeException('Crawler returned no valid pages');
             }
 
@@ -144,6 +155,13 @@ final class CrawlOrchestrator
                     $pagesWithMatches
                 )
             );
+            if ($skippedUnchangedPages > 0) {
+                $this->siteRepository->appendProgressLog(
+                    $siteId,
+                    sprintf('Повторный regex-анализ пропущен для %d неизменившихся страниц', $skippedUnchangedPages),
+                    'info'
+                );
+            }
             $this->siteRepository->markCompleted($siteId);
 
             return [

@@ -231,6 +231,52 @@ final class CrawlOrchestratorTest extends DatabaseTestCase
         self::assertCount(2, $findingsAfter);
     }
 
+    public function testScanSkipsRegexForUnchangedPageWithoutFindings(): void
+    {
+        $siteRepository = new SiteRepository($this->pdo);
+        $pageRepository = new PageRepository($this->pdo);
+        $findingRepository = new FindingRepository($this->pdo);
+
+        $siteRepository->create('Site A', 'https://example.org');
+        $site = $siteRepository->all()[0];
+        $siteId = (int) $site['id'];
+
+        $orchestrator = $this->buildOrchestrator(static function (): array {
+            return [
+                'ok' => true,
+                'status' => 200,
+                'body' => json_encode([
+                    'pages' => [
+                        ['url' => 'https://example.org/no-match', 'status' => 200, 'title' => 'No Match', 'text' => 'regular page body'],
+                    ],
+                    'stats' => ['returned' => 1],
+                ], JSON_THROW_ON_ERROR),
+                'error' => null,
+                'curl_failed' => false,
+            ];
+        });
+
+        $first = $orchestrator->scanSite($site, ['retry_attempts' => 1, 'retry_delay_ms' => 1]);
+        self::assertSame(1, $first['pages_total']);
+        self::assertSame(0, $first['pages_with_matches']);
+        self::assertCount(0, $findingRepository->recentBySite($siteId, 10));
+
+        $storedPageBefore = $pageRepository->findBySiteAndUrl($siteId, 'https://example.org/no-match');
+        self::assertNotNull($storedPageBefore);
+        $firstCrawledAt = (string) ($storedPageBefore['crawled_at'] ?? '');
+
+        usleep(1_100_000);
+
+        $second = $orchestrator->scanSite($site, ['retry_attempts' => 1, 'retry_delay_ms' => 1]);
+        self::assertSame(1, $second['pages_total']);
+        self::assertSame(0, $second['pages_with_matches']);
+        self::assertCount(0, $findingRepository->recentBySite($siteId, 10));
+
+        $storedPageAfter = $pageRepository->findBySiteAndUrl($siteId, 'https://example.org/no-match');
+        self::assertNotNull($storedPageAfter);
+        self::assertNotSame($firstCrawledAt, (string) ($storedPageAfter['crawled_at'] ?? ''));
+    }
+
     public function testScanCompletesWhenPagesAreStreamedIncrementally(): void
     {
         $siteRepository = new SiteRepository($this->pdo);

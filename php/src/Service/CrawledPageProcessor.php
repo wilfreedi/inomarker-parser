@@ -20,15 +20,25 @@ final class CrawledPageProcessor
 
     /**
      * @param array<string, mixed> $page
-     * @return array{processed:bool,skipped_matched:bool,has_matches:bool,page_id:int|null,url:string}
+     * @return array{
+     *   processed:bool,
+     *   skipped_matched:bool,
+     *   skipped_unchanged:bool,
+     *   has_matches:bool,
+     *   page_id:int|null,
+     *   url:string
+     * }
      */
     public function process(int $siteId, int $runId, array $page): array
     {
         $url = trim((string) ($page['url'] ?? ''));
+        $content = (string) ($page['text'] ?? '');
+        $contentHash = hash('sha256', $content);
         if (!$this->isValidCrawledPage($page)) {
             return [
                 'processed' => false,
                 'skipped_matched' => false,
+                'skipped_unchanged' => false,
                 'has_matches' => false,
                 'page_id' => null,
                 'url' => $url,
@@ -40,8 +50,27 @@ final class CrawledPageProcessor
             return [
                 'processed' => false,
                 'skipped_matched' => true,
+                'skipped_unchanged' => false,
                 'has_matches' => false,
                 'page_id' => (int) ($existing['id'] ?? 0),
+                'url' => $url,
+            ];
+        }
+        if (
+            $existing !== null
+            && (string) ($existing['content_hash'] ?? '') === $contentHash
+        ) {
+            $pageId = (int) ($existing['id'] ?? 0);
+            if ($pageId > 0) {
+                $this->pageRepository->touchUnchanged($pageId, $page);
+            }
+
+            return [
+                'processed' => false,
+                'skipped_matched' => false,
+                'skipped_unchanged' => true,
+                'has_matches' => false,
+                'page_id' => $pageId > 0 ? $pageId : null,
                 'url' => $url,
             ];
         }
@@ -64,6 +93,7 @@ final class CrawledPageProcessor
         return [
             'processed' => true,
             'skipped_matched' => false,
+            'skipped_unchanged' => false,
             'has_matches' => $matches !== [],
             'page_id' => $pageId,
             'url' => $url,
