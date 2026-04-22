@@ -21,6 +21,8 @@ services:
       CRAWLER_ENDPOINT: http://crawler:3000/crawl
       CRAWLER_PROGRESS_ENDPOINT: http://app:8080/internal/crawl-progress
       CRAWLER_PROGRESS_TOKEN: dev-progress-token
+      CRAWLER_PAGE_ENDPOINT: http://app:8080/internal/crawl-page
+      CRAWLER_PAGE_TOKEN: dev-progress-token
       SITE_PROGRESS_MIN_LEVEL: info
       WORKER_IDLE_SLEEP_SECONDS: 20
     ports:
@@ -53,6 +55,8 @@ services:
       CRAWLER_ENDPOINT: http://crawler:3000/crawl
       CRAWLER_PROGRESS_ENDPOINT: http://app:8080/internal/crawl-progress
       CRAWLER_PROGRESS_TOKEN: dev-progress-token
+      CRAWLER_PAGE_ENDPOINT: http://app:8080/internal/crawl-page
+      CRAWLER_PAGE_TOKEN: dev-progress-token
       SITE_PROGRESS_MIN_LEVEL: info
       WORKER_IDLE_SLEEP_SECONDS: 20
     volumes:

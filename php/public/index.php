@@ -65,7 +65,7 @@ $requestPathWithQuery = $path . ($queryString !== '' ? ('?' . $queryString) : ''
 $isApiRequest = str_starts_with($path, '/api/');
 $isLoginRoute = $path === '/login';
 $isLogoutRoute = $path === '/logout';
-$isInternalCrawlProgress = $path === '/internal/crawl-progress' && $method === 'POST';
+$isInternalCrawlerRequest = in_array($path, ['/internal/crawl-progress', '/internal/crawl-page'], true) && $method === 'POST';
 
 $authExpiresAt = (int) ($_SESSION['admin_auth_expires_at'] ?? 0);
 $isAuthenticated = $authExpiresAt > time();
@@ -120,7 +120,7 @@ if ($method === 'POST' && $isLogoutRoute) {
     parserRedirect(parserBuildUrl('/login', ['notice' => 'Вы вышли из системы']));
 }
 
-if (!$isAuthenticated && !$isInternalCrawlProgress) {
+if (!$isAuthenticated && !$isInternalCrawlerRequest) {
     if ($isApiRequest) {
         http_response_code(401);
         header('Content-Type: application/json; charset=utf-8');
@@ -248,6 +248,11 @@ if ($method === 'POST' && preg_match('#^/sites/(\d+)/recrawl$#', $path, $matches
 if ($method === 'POST' && $path === '/internal/crawl-progress') {
     $rawBody = file_get_contents('php://input');
     $controller->ingestCrawlProgress(is_string($rawBody) ? $rawBody : '', $_SERVER);
+}
+
+if ($method === 'POST' && $path === '/internal/crawl-page') {
+    $rawBody = file_get_contents('php://input');
+    $controller->ingestCrawledPage(is_string($rawBody) ? $rawBody : '', $_SERVER);
 }
 
 if ($method === 'GET' && $path === '/api/sites/live') {

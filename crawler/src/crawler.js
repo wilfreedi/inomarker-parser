@@ -43,6 +43,18 @@ const PROGRESS_QUEUE_MAX = Math.max(
   10,
   Number(process.env.CRAWLER_PROGRESS_QUEUE_MAX || 200)
 );
+const PAGE_CALLBACK_TIMEOUT_MS = Math.max(
+  1000,
+  Number(process.env.CRAWLER_PAGE_CALLBACK_TIMEOUT_MS || 15000)
+);
+const PAGE_CALLBACK_RETRY_ATTEMPTS = Math.max(
+  1,
+  Number(process.env.CRAWLER_PAGE_CALLBACK_RETRY_ATTEMPTS || 3)
+);
+const PAGE_CALLBACK_RETRY_DELAY_MS = Math.max(
+  100,
+  Number(process.env.CRAWLER_PAGE_CALLBACK_RETRY_DELAY_MS || 800)
+);
 const PROGRESS_LEVEL_WEIGHTS = {
   debug: 10,
   info: 20,
@@ -1567,6 +1579,72 @@ async function sendProgressEvent(eventPayload) {
   }
 }
 
+async function sendPageEvent(eventPayload) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PAGE_CALLBACK_TIMEOUT_MS);
+  const headers = {
+    "Content-Type": "application/json"
+  };
+  if (eventPayload.token) {
+    headers["X-Crawler-Progress-Token"] = eventPayload.token;
+  }
+
+  try {
+    const response = await withHardTimeout(
+      fetch(eventPayload.url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          siteId: eventPayload.siteId,
+          runId: eventPayload.runId,
+          page: eventPayload.page
+        }),
+        signal: controller.signal
+      }),
+      PAGE_CALLBACK_TIMEOUT_MS,
+      () => null
+    );
+    if (response === null) {
+      controller.abort();
+      throw new Error(`page callback timeout after ${PAGE_CALLBACK_TIMEOUT_MS}ms`);
+    }
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(`page callback http ${response.status}: ${body.slice(0, 300)}`);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function reportPage(pageCallback, page) {
+  if (!pageCallback || !pageCallback.url) {
+    return;
+  }
+
+  let lastError = null;
+  for (let attempt = 1; attempt <= PAGE_CALLBACK_RETRY_ATTEMPTS; attempt++) {
+    try {
+      await sendPageEvent({
+        url: pageCallback.url,
+        token: pageCallback.token || "",
+        siteId: Number(pageCallback.siteId || 0),
+        runId: Number(pageCallback.runId || 0),
+        page
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= PAGE_CALLBACK_RETRY_ATTEMPTS) {
+        break;
+      }
+      await sleep(PAGE_CALLBACK_RETRY_DELAY_MS);
+    }
+  }
+
+  throw new Error(`page callback failed after ${PAGE_CALLBACK_RETRY_ATTEMPTS} attempts: ${errorToMessage(lastError)}`);
+}
+
 async function flushProgressQueue(runKey, state) {
   state.sending = true;
   try {
@@ -1672,6 +1750,8 @@ async function crawlSite(options) {
   const adaptiveNavDecayMs = Math.max(250, Number(process.env.CRAWLER_ADAPTIVE_NAV_DECAY_MS || 800));
   const abortSignal = options.abortSignal || null;
   const progressCallback = options.progressCallback || null;
+  const pageCallback = options.pageCallback || null;
+  const shouldStreamPages = Boolean(options.streamPages) && pageCallback && pageCallback.url;
   const pacer = createRequestPacer({
     minIntervalMs: minRequestIntervalMs,
     jitterMinMs: Number(process.env.CRAWLER_DELAY_MIN_MS || 0),
@@ -1737,6 +1817,7 @@ async function crawlSite(options) {
   const queued = new Set([startUrl]);
   const visited = new Set();
   const pages = [];
+  let completedPages = 0;
   let stopReason = "queue_empty";
   let processedSinceRecycle = 0;
   let adaptiveNavigationTimeoutMs = Math.min(timeoutMs, adaptiveNavMinMs);
@@ -1838,7 +1919,7 @@ async function crawlSite(options) {
     }
 
     let shouldPauseBeforeNextRequest = false;
-    while (queue.length > 0 && pages.length < maxPages) {
+    while (queue.length > 0 && completedPages < maxPages) {
       if (abortSignal && abortSignal.aborted) {
         stopReason = "request_aborted";
         break;
@@ -1853,16 +1934,16 @@ async function crawlSite(options) {
       }
       const sourceLabel = current.source === "sitemap" ? "sitemap" : "links";
       await reportProgress(progressCallback, {
-        pagesVisited: pages.length,
+        pagesVisited: completedPages,
         currentUrl: current.url,
-        event: `Начата страница ${pages.length + 1}: source=${sourceLabel}, depth=${current.depth}, queueRemaining=${queue.length}`,
+        event: `Начата страница ${completedPages + 1}: source=${sourceLabel}, depth=${current.depth}, queueRemaining=${queue.length}`,
         eventLevel: "debug"
       });
       if (shouldPauseBeforeNextRequest) {
         const pauseMs = current.source === "sitemap" ? sitemapPagePauseMs : pagePauseMs;
         if (pauseMs > 0) {
           await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
+            pagesVisited: completedPages,
             currentUrl: current.url,
             event: `Пауза перед следующей страницей: ${pauseMs}мс`,
             eventLevel: "debug"
@@ -1874,7 +1955,7 @@ async function crawlSite(options) {
       visited.add(current.url);
 
       await reportProgress(progressCallback, {
-        pagesVisited: pages.length,
+        pagesVisited: completedPages,
         currentUrl: current.url,
         event: "Ожидание pacing/backoff перед запросом",
         eventLevel: "debug"
@@ -1894,7 +1975,7 @@ async function crawlSite(options) {
 
       try {
         await reportProgress(progressCallback, {
-          pagesVisited: pages.length,
+          pagesVisited: completedPages,
           currentUrl: current.url,
           event: `Проверка страницы (${sourceLabel}): ${current.url}`,
           eventLevel: "info"
@@ -1904,7 +1985,7 @@ async function crawlSite(options) {
         if (remainingBeforeNavMs <= 1500 || remainingForPageMs <= 1000) {
           stopReason = "max_duration_reached";
           await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
+            pagesVisited: completedPages,
             currentUrl: current.url,
             event: "Остановлено до навигации: достигнут дедлайн запуска",
             eventLevel: "warn"
@@ -1918,7 +1999,7 @@ async function crawlSite(options) {
           const adaptiveTimeoutMs = adaptiveNavEnabled ? adaptiveNavigationTimeoutMs : navigationMaxBudgetMs;
           const navigationTimeoutMs = Math.max(1000, Math.min(navigationMaxBudgetMs, adaptiveTimeoutMs));
           await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
+            pagesVisited: completedPages,
             currentUrl: current.url,
             event: `Навигация page.goto(waitUntil=domcontentloaded, timeout=${navigationTimeoutMs}мс, attempt=${navigationAttempt})`,
             eventLevel: "debug"
@@ -1936,7 +2017,7 @@ async function crawlSite(options) {
               }
             }
             await reportProgress(progressCallback, {
-              pagesVisited: pages.length,
+              pagesVisited: completedPages,
               currentUrl: current.url,
               event: `Навигация завершена: status=${status ?? "n/a"}, elapsed=${navigationElapsedMs}мс`,
               eventLevel: status !== null && status >= 400 ? "warn" : "debug"
@@ -1962,10 +2043,10 @@ async function crawlSite(options) {
                   }
                 }
                 await reportProgress(progressCallback, {
-                  pagesVisited: pages.length,
+                  pagesVisited: completedPages,
                   currentUrl: current.url,
-                  event: `Навигация timeout, но контент уже в DOM: titleLen=${payload.title.length}, textLen=${payload.text.length}, links=${payload.linksFiltered.length}`,
-                  eventLevel: "warn"
+                  event: `Навигация завершилась по DOM fallback: titleLen=${payload.title.length}, textLen=${payload.text.length}, links=${payload.linksFiltered.length}`,
+                  eventLevel: "info"
                 });
                 break;
               }
@@ -1984,7 +2065,7 @@ async function crawlSite(options) {
               throw error;
             }
             await reportProgress(progressCallback, {
-              pagesVisited: pages.length,
+              pagesVisited: completedPages,
               currentUrl: current.url,
               event: `Навигация timeout без контента, retry с увеличенным timeout (next<=${Math.min(remainingForRetryMs, adaptiveNavigationTimeoutMs)}мс)`,
               eventLevel: "warn"
@@ -2002,7 +2083,7 @@ async function crawlSite(options) {
             abortSignal,
             maxWaitMs: challengeWaitBudgetMs,
             currentUrl: current.url,
-            pagesVisited: pages.length,
+            pagesVisited: completedPages,
             onEvent: async (eventPayload) => {
               await reportProgress(progressCallback, eventPayload);
             }
@@ -2015,7 +2096,7 @@ async function crawlSite(options) {
             const humanTimeBudgetMs = Math.min(humanBudgetMs, remainingBeforeHumanMs - extractionReserveMs);
             const humanDeadlineAt = Date.now() + humanTimeBudgetMs;
             await reportProgress(progressCallback, {
-              pagesVisited: pages.length,
+              pagesVisited: completedPages,
               currentUrl: current.url,
               event: `Запуск эмуляции пользовательского поведения (budget=${humanTimeBudgetMs}мс)`,
               eventLevel: "debug"
@@ -2028,35 +2109,35 @@ async function crawlSite(options) {
               dwellMinMs: humanDwellMinMs,
               dwellMaxMs: humanDwellMaxMs,
               currentUrl: current.url,
-              pagesVisited: pages.length,
+              pagesVisited: completedPages,
               onEvent: async (eventPayload) => {
                 await reportProgress(progressCallback, eventPayload);
               }
             });
           } else if (allowHumanBehavior && throughputMode) {
             await reportProgress(progressCallback, {
-              pagesVisited: pages.length,
+              pagesVisited: completedPages,
               currentUrl: current.url,
               event: `Эмуляция пользователя пропущена: throughput mode (queue=${queue.length})`,
               eventLevel: "debug"
             });
           } else if (allowHumanBehavior) {
             await reportProgress(progressCallback, {
-              pagesVisited: pages.length,
+              pagesVisited: completedPages,
               currentUrl: current.url,
               event: "Эмуляция пользователя пропущена: нужно сохранить бюджет на извлечение контента",
               eventLevel: "warn"
             });
           } else if (!humanBehaviorEnabled) {
             await reportProgress(progressCallback, {
-              pagesVisited: pages.length,
+              pagesVisited: completedPages,
               currentUrl: current.url,
               event: "Эмуляция пользователя отключена конфигурацией",
               eventLevel: "debug"
             });
           } else {
             await reportProgress(progressCallback, {
-              pagesVisited: pages.length,
+              pagesVisited: completedPages,
               currentUrl: current.url,
               event: "Эмуляция пользователя пропущена для sitemap-страницы",
               eventLevel: "debug"
@@ -2068,7 +2149,7 @@ async function crawlSite(options) {
             abortSignal,
             pauseMs: 450,
             currentUrl: current.url,
-            pagesVisited: pages.length,
+            pagesVisited: completedPages,
             onEvent: async (eventPayload) => {
               await reportProgress(progressCallback, eventPayload);
             }
@@ -2080,7 +2161,7 @@ async function crawlSite(options) {
             const dynamicTimeBudgetMs = Math.min(dynamicBudgetMs, remainingBeforeDynamicMs - extractionReserveMs);
             const dynamicDeadlineAt = Date.now() + dynamicTimeBudgetMs;
             await reportProgress(progressCallback, {
-              pagesVisited: pages.length,
+              pagesVisited: completedPages,
               currentUrl: current.url,
               event: `Запуск динамического добора ссылок (budget=${dynamicTimeBudgetMs}мс)`,
               eventLevel: "debug"
@@ -2093,28 +2174,28 @@ async function crawlSite(options) {
               pauseMinMs: dynamicScrollPauseMinMs,
               pauseMaxMs: dynamicScrollPauseMaxMs,
               currentUrl: current.url,
-              pagesVisited: pages.length,
+              pagesVisited: completedPages,
               onEvent: async (eventPayload) => {
                 await reportProgress(progressCallback, eventPayload);
               }
             });
           } else if (allowDynamicScroll && throughputMode) {
             await reportProgress(progressCallback, {
-              pagesVisited: pages.length,
+              pagesVisited: completedPages,
               currentUrl: current.url,
               event: `Динамический добор ссылок пропущен: throughput mode (queue=${queue.length})`,
               eventLevel: "debug"
             });
           } else if (!dynamicScrollEnabled) {
             await reportProgress(progressCallback, {
-              pagesVisited: pages.length,
+              pagesVisited: completedPages,
               currentUrl: current.url,
               event: "Динамический добор ссылок отключен конфигурацией",
               eventLevel: "debug"
             });
           } else {
             await reportProgress(progressCallback, {
-              pagesVisited: pages.length,
+              pagesVisited: completedPages,
               currentUrl: current.url,
               event: "Динамический добор ссылок пропущен: нужно сохранить бюджет на извлечение контента",
               eventLevel: "warn"
@@ -2122,17 +2203,17 @@ async function crawlSite(options) {
           }
         } else {
           await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
+            pagesVisited: completedPages,
             currentUrl: current.url,
-            event: "Пропущены challenge/human/dynamic шаги: использован контент из уже загруженного DOM после timeout",
-            eventLevel: "warn"
+            event: "Пропущены challenge/human/dynamic шаги: использован стабильно извлеченный DOM-контент после timeout",
+            eventLevel: "info"
           });
         }
 
         if (remainingMs(pageDeadlineAt) <= 0) {
           await page.evaluate(() => window.stop()).catch(() => undefined);
           await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
+            pagesVisited: completedPages,
             currentUrl: current.url,
             event: "Принудительная остановка страницы: истек лимит времени страницы",
             eventLevel: "warn"
@@ -2148,7 +2229,7 @@ async function crawlSite(options) {
           text = "";
           pageLinks = [];
           await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
+            pagesVisited: completedPages,
             currentUrl: current.url,
             event: `Извлечение контента не удалось (timeout=${extractTimeoutMs}мс)`,
             eventLevel: "warn"
@@ -2158,7 +2239,7 @@ async function crawlSite(options) {
           text = payload.text;
           pageLinks = payload.linksFiltered;
           await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
+            pagesVisited: completedPages,
             currentUrl: current.url,
             event: `Извлечен контент: titleLen=${title.length}, textLen=${text.length}, linksRaw=${payload.linksRawCount ?? pageLinks.length}, linksFiltered=${pageLinks.length}`,
             eventLevel: "debug"
@@ -2168,7 +2249,7 @@ async function crawlSite(options) {
         pacer.markResponse(503);
         await page.evaluate(() => window.stop()).catch(() => undefined);
         await reportProgress(progressCallback, {
-          pagesVisited: pages.length,
+          pagesVisited: completedPages,
           currentUrl: current.url,
           event: `Ошибка страницы: ${current.url}; detail=${errorToMessage(error)}`,
           eventLevel: "error"
@@ -2178,16 +2259,32 @@ async function crawlSite(options) {
         pageLinks = [];
       }
 
-      pages.push({
+      const pageResult = {
         url: current.url,
         status,
         title,
         text
-      });
+      };
+      if (shouldStreamPages) {
+        try {
+          await reportPage(pageCallback, pageResult);
+        } catch (error) {
+          await reportProgress(progressCallback, {
+            pagesVisited: completedPages,
+            currentUrl: current.url,
+            event: `Ошибка передачи страницы в app: ${errorToMessage(error)}`,
+            eventLevel: "error"
+          });
+          throw error;
+        }
+      } else {
+        pages.push(pageResult);
+      }
+      completedPages++;
       await reportProgress(progressCallback, {
-        pagesVisited: pages.length,
+        pagesVisited: completedPages,
         currentUrl: current.url,
-        event: `Страница завершена: #${pages.length}, queue=${queue.length}, visited=${visited.size}`,
+        event: `Страница завершена: #${completedPages}, queue=${queue.length}, visited=${visited.size}`,
         eventLevel: "debug"
       });
       processedSinceRecycle++;
@@ -2201,7 +2298,7 @@ async function crawlSite(options) {
       ) {
         try {
           await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
+            pagesVisited: completedPages,
             currentUrl: current.url,
             event: `Запущен recycle page после ${processedSinceRecycle} страниц`,
             eventLevel: "debug"
@@ -2212,7 +2309,7 @@ async function crawlSite(options) {
           previousPage.off("popup", popupHandler);
           await previousPage.close().catch(() => undefined);
           await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
+            pagesVisited: completedPages,
             currentUrl: current.url,
             event: "Recycle page завершен успешно",
             eventLevel: "info"
@@ -2220,7 +2317,7 @@ async function crawlSite(options) {
         } catch (error) {
           processedSinceRecycle = 0;
           await reportProgress(progressCallback, {
-            pagesVisited: pages.length,
+            pagesVisited: completedPages,
             currentUrl: current.url,
             event: `Ошибка recycle page: ${errorToMessage(error)}`,
             eventLevel: "warn"
@@ -2238,7 +2335,7 @@ async function crawlSite(options) {
           }
         }
         await reportProgress(progressCallback, {
-          pagesVisited: pages.length,
+          pagesVisited: completedPages,
           currentUrl: current.url,
           event: `Добавлено новых ссылок из DOM: ${queuedFromPage}; queueNow=${queue.length}`,
           eventLevel: "debug"
@@ -2246,13 +2343,13 @@ async function crawlSite(options) {
       }
     }
 
-    if (stopReason === "queue_empty" && queue.length > 0 && pages.length >= maxPages) {
+    if (stopReason === "queue_empty" && queue.length > 0 && completedPages >= maxPages) {
       stopReason = "max_pages_reached";
     }
     await reportProgress(progressCallback, {
-      pagesVisited: pages.length,
+      pagesVisited: completedPages,
       currentUrl: "",
-      event: `Обход завершен: ${pages.length} страниц, причина=${stopReason}`,
+      event: `Обход завершен: ${completedPages} страниц, причина=${stopReason}`,
       eventLevel: stopReason === "queue_empty" ? "info" : "warn"
     });
   } finally {
@@ -2264,9 +2361,10 @@ async function crawlSite(options) {
 
   return {
     pages,
+    streamedPages: shouldStreamPages,
     stats: {
       visited: visited.size,
-      returned: pages.length,
+      returned: completedPages,
       truncated: stopReason !== "queue_empty",
       stopReason,
       elapsedMs: Date.now() - startedAt

@@ -24,9 +24,9 @@ final class CrawlerClientTest extends TestCase
             }
         );
 
-        $pages = $client->crawl('https://example.org', ['retry_attempts' => 2, 'retry_delay_ms' => 1]);
-        self::assertCount(1, $pages);
-        self::assertSame('https://example.org', $pages[0]['url']);
+        $result = $client->crawl('https://example.org', ['retry_attempts' => 2, 'retry_delay_ms' => 1]);
+        self::assertCount(1, $result['pages']);
+        self::assertSame('https://example.org', $result['pages'][0]['url']);
     }
 
     public function testRetriesOnRetryableStatusAndThenSucceeds(): void
@@ -56,10 +56,10 @@ final class CrawlerClientTest extends TestCase
             }
         );
 
-        $pages = $client->crawl('https://example.org', ['retry_attempts' => 2, 'retry_delay_ms' => 1]);
-        self::assertCount(1, $pages);
+        $result = $client->crawl('https://example.org', ['retry_attempts' => 2, 'retry_delay_ms' => 1]);
+        self::assertCount(1, $result['pages']);
         self::assertSame(2, $attempt);
-        self::assertSame('https://example.org/retry', $pages[0]['url']);
+        self::assertSame('https://example.org/retry', $result['pages'][0]['url']);
     }
 
     public function testDoesNotRetryOnNonRetryableClientError(): void
@@ -221,5 +221,49 @@ final class CrawlerClientTest extends TestCase
         self::assertSame('secret-token', $decoded['progressCallback']['token']);
         self::assertSame(7, $decoded['progressCallback']['siteId']);
         self::assertSame(99, $decoded['progressCallback']['runId']);
+    }
+
+    public function testIncludesPageCallbackAndStreamingFlagWhenConfigured(): void
+    {
+        $capturedPayload = null;
+        $client = new CrawlerClient(
+            'http://crawler.local/crawl',
+            static function (string $_endpoint, string $payload) use (&$capturedPayload): array {
+                $capturedPayload = $payload;
+                return [
+                    'ok' => true,
+                    'status' => 200,
+                    'body' => json_encode([
+                        'pages' => [],
+                        'stats' => ['returned' => 3],
+                        'streamedPages' => true,
+                    ], JSON_THROW_ON_ERROR),
+                    'error' => null,
+                    'curl_failed' => false,
+                ];
+            },
+            'http://app.local/internal/crawl-progress',
+            'progress-token',
+            'http://app.local/internal/crawl-page',
+            'page-token'
+        );
+
+        $result = $client->crawl('https://example.org', [
+            'retry_attempts' => 1,
+            'retry_delay_ms' => 1,
+            'site_id' => 7,
+            'run_id' => 99,
+        ]);
+
+        self::assertTrue($result['streamed_pages']);
+        self::assertSame(3, (int) $result['stats']['returned']);
+        self::assertIsString($capturedPayload);
+        $decoded = json_decode((string) $capturedPayload, true, 512, JSON_THROW_ON_ERROR);
+        self::assertTrue($decoded['streamPages']);
+        self::assertIsArray($decoded['pageCallback']);
+        self::assertSame('http://app.local/internal/crawl-page', $decoded['pageCallback']['url']);
+        self::assertSame('page-token', $decoded['pageCallback']['token']);
+        self::assertSame(7, $decoded['pageCallback']['siteId']);
+        self::assertSame(99, $decoded['pageCallback']['runId']);
     }
 }

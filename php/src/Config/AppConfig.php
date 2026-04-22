@@ -32,6 +32,8 @@ final class AppConfig
             'crawler_endpoint' => Env::get('CRAWLER_ENDPOINT', 'http://crawler:3000/crawl') ?? '',
             'crawler_progress_endpoint' => Env::get('CRAWLER_PROGRESS_ENDPOINT', '') ?? '',
             'crawler_progress_token' => Env::get('CRAWLER_PROGRESS_TOKEN', '') ?? '',
+            'crawler_page_endpoint' => Env::get('CRAWLER_PAGE_ENDPOINT', '') ?? '',
+            'crawler_page_token' => Env::get('CRAWLER_PAGE_TOKEN', Env::get('CRAWLER_PROGRESS_TOKEN', '') ?? '') ?? '',
             'worker_idle_sleep_seconds' => Env::get('WORKER_IDLE_SLEEP_SECONDS', '20') ?? '20',
         ]);
     }

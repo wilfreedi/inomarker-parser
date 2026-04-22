@@ -16,6 +16,7 @@ use App\Repository\RunRepository;
 use App\Repository\SettingRepository;
 use App\Repository\SiteRepository;
 use App\Service\CrawlOrchestrator;
+use App\Service\CrawledPageProcessor;
 use App\Service\CrawlerClient;
 use App\Service\DetachedConsoleLauncher;
 use App\Service\FindingsRevalidator;
@@ -41,6 +42,7 @@ final class Application
     private FindingsRevalidator $findingsRevalidator;
     private DetachedConsoleLauncher $detachedConsoleLauncher;
     private CrawlerClient $crawlerClient;
+    private CrawledPageProcessor $crawledPageProcessor;
     private CrawlOrchestrator $crawlOrchestrator;
     private SiteReportService $siteReportService;
     private Renderer $renderer;
@@ -70,6 +72,11 @@ final class Application
             $this->findingRevalidationRepository,
             $this->patternCatalog
         );
+        $this->crawledPageProcessor = new CrawledPageProcessor(
+            $this->pageRepository,
+            $this->findingRepository,
+            $this->patternCatalog
+        );
         $this->detachedConsoleLauncher = new DetachedConsoleLauncher(
             $this->config->getString('app_base_path') . '/bin/console'
         );
@@ -77,15 +84,16 @@ final class Application
             $this->config->getString('crawler_endpoint'),
             null,
             $this->config->getString('crawler_progress_endpoint'),
-            $this->config->getString('crawler_progress_token')
+            $this->config->getString('crawler_progress_token'),
+            $this->config->getString('crawler_page_endpoint'),
+            $this->config->getString('crawler_page_token')
         );
         $this->crawlOrchestrator = new CrawlOrchestrator(
             $this->siteRepository,
             $this->crawlRunRepository,
-            $this->pageRepository,
             $this->findingRepository,
             $this->crawlerClient,
-            $this->patternCatalog
+            $this->crawledPageProcessor
         );
         $this->siteReportService = new SiteReportService(
             $this->siteRepository,
@@ -116,6 +124,7 @@ final class Application
             $this->regexSyncService,
             $this->detachedConsoleLauncher,
             $this->config->getString('regex_db_path'),
+            $this->crawlOrchestrator,
             $this->config->getString('crawler_progress_token'),
             $this->config->getString('admin_secret_password')
         );

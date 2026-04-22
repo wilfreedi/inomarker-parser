@@ -50,6 +50,23 @@ final class FindingRepository
         }
     }
 
+    public function deleteByRunAndPage(int $runId, int $pageId): void
+    {
+        $stmt = $this->pdo->prepare('DELETE FROM findings WHERE run_id = :run_id AND page_id = :page_id');
+        $stmt->bindValue(':run_id', $runId, PDO::PARAM_INT);
+        $stmt->bindValue(':page_id', $pageId, PDO::PARAM_INT);
+        $stmt->execute();
+    }
+
+    public function countMatchedPagesByRun(int $runId): int
+    {
+        $stmt = $this->pdo->prepare('SELECT COUNT(DISTINCT page_id) FROM findings WHERE run_id = :run_id');
+        $stmt->bindValue(':run_id', $runId, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return (int) $stmt->fetchColumn();
+    }
+
     /** @return array<int, array<string, mixed>> */
     public function recent(int $limit = 200): array
     {

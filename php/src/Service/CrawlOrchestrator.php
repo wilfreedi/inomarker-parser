@@ -6,7 +6,6 @@ namespace App\Service;
 
 use App\Repository\CrawlRunRepository;
 use App\Repository\FindingRepository;
-use App\Repository\PageRepository;
 use App\Repository\SiteRepository;
 
 final class CrawlOrchestrator
@@ -14,10 +13,9 @@ final class CrawlOrchestrator
     public function __construct(
         private readonly SiteRepository $siteRepository,
         private readonly CrawlRunRepository $crawlRunRepository,
-        private readonly PageRepository $pageRepository,
         private readonly FindingRepository $findingRepository,
         private readonly CrawlerClient $crawlerClient,
-        private readonly PatternCatalog $patternCatalog,
+        private readonly CrawledPageProcessor $crawledPageProcessor,
     ) {
     }
 
@@ -38,19 +36,24 @@ final class CrawlOrchestrator
 
         try {
             $this->siteRepository->appendProgressLog($siteId, 'Отправлен запрос в crawler-сервис');
-            $pages = $this->crawlerClient->crawl((string) $site['base_url'], [
+            $crawlResult = $this->crawlerClient->crawl((string) $site['base_url'], [
                 ...$crawlerOptions,
                 'site_id' => $siteId,
                 'run_id' => $runId,
             ]);
-            if ($pages === []) {
+            $pages = $crawlResult['pages'];
+            $crawlStats = $crawlResult['stats'];
+            $streamedPages = (bool) ($crawlResult['streamed_pages'] ?? false);
+            $returnedPages = max(0, (int) ($crawlStats['returned'] ?? count($pages)));
+            if ($returnedPages === 0 && $pages === []) {
                 throw new \RuntimeException('Crawler returned no pages');
             }
             $this->siteRepository->appendProgressLog(
                 $siteId,
-                sprintf('Crawler вернул %d страниц, запуск анализа совпадений', count($pages))
+                $streamedPages
+                    ? sprintf('Crawler начал потоковую передачу страниц, ожидаем завершение обхода (%d страниц)', $returnedPages)
+                    : sprintf('Crawler вернул %d страниц, запуск анализа совпадений', count($pages))
             );
-            $matcher = new PatternMatcher($this->patternCatalog->all(true));
 
             foreach ($pages as $page) {
                 $pagesTotal++;
@@ -61,16 +64,8 @@ final class CrawlOrchestrator
                     sprintf('Анализ страницы #%d: %s (status=%s)', $pagesTotal, $url !== '' ? $url : '[empty_url]', $status),
                     'debug'
                 );
-                if (!$this->isValidCrawledPage($page)) {
-                    $this->siteRepository->appendProgressLog(
-                        $siteId,
-                        sprintf('Страница пропущена как невалидная: #%d', $pagesTotal),
-                        'warn'
-                    );
-                    continue;
-                }
-                $existing = $this->pageRepository->findBySiteAndUrl($siteId, $url);
-                if ($existing !== null && (int) ($existing['is_matched'] ?? 0) === 1) {
+                $result = $this->crawledPageProcessor->process($siteId, $runId, $page);
+                if ($result['skipped_matched']) {
                     $skippedMatchedPages++;
                     $this->siteRepository->appendProgressLog(
                         $siteId,
@@ -79,27 +74,25 @@ final class CrawlOrchestrator
                     );
                     continue;
                 }
-                $validPagesTotal++;
-                $pageId = $this->pageRepository->upsert($siteId, $page);
-                $this->siteRepository->appendProgressLog(
-                    $siteId,
-                    sprintf('Страница сохранена: id=%d url=%s', $pageId, $url),
-                    'debug'
-                );
-                $matches = $matcher->match((string) ($page['text'] ?? ''));
-                if ($matches !== []) {
-                    $pagesWithMatches++;
-                    $this->findingRepository->insertBatch($runId, $siteId, $pageId, $matches);
-                    $this->pageRepository->markMatched(
-                        $pageId,
-                        array_values(array_map(
-                            static fn (array $match): string => (string) ($match['entity_name'] ?? ''),
-                            $matches
-                        ))
-                    );
+                if (!$result['processed']) {
                     $this->siteRepository->appendProgressLog(
                         $siteId,
-                        sprintf('Совпадения найдены: url=%s, count=%d', $url, count($matches))
+                        sprintf('Страница пропущена как невалидная: #%d', $pagesTotal),
+                        'warn'
+                    );
+                    continue;
+                }
+                $validPagesTotal++;
+                $this->siteRepository->appendProgressLog(
+                    $siteId,
+                    sprintf('Страница сохранена: id=%d url=%s', (int) ($result['page_id'] ?? 0), $url),
+                    'debug'
+                );
+                if ($result['has_matches']) {
+                    $pagesWithMatches++;
+                    $this->siteRepository->appendProgressLog(
+                        $siteId,
+                        sprintf('Совпадения найдены: url=%s', $url)
                     );
                 } else {
                     $this->siteRepository->appendProgressLog(
@@ -109,6 +102,13 @@ final class CrawlOrchestrator
                     );
                 }
             }
+
+            if ($streamedPages) {
+                $pagesTotal = $returnedPages;
+                $pagesWithMatches = $this->findingRepository->countMatchedPagesByRun($runId);
+                $validPagesTotal = $pagesTotal;
+            }
+
             $this->siteRepository->appendProgressLog(
                 $siteId,
                 sprintf(
@@ -159,19 +159,8 @@ final class CrawlOrchestrator
     }
 
     /** @param array<string, mixed> $page */
-    private function isValidCrawledPage(array $page): bool
+    public function ingestPage(int $siteId, int $runId, array $page): array
     {
-        $url = trim((string) ($page['url'] ?? ''));
-        if ($url === '') {
-            return false;
-        }
-        if (!filter_var($url, FILTER_VALIDATE_URL)) {
-            return false;
-        }
-        if (!preg_match('#^https?://#i', $url)) {
-            return false;
-        }
-
-        return true;
+        return $this->crawledPageProcessor->process($siteId, $runId, $page);
     }
 }

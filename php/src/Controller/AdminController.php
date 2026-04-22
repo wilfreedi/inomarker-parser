@@ -13,6 +13,7 @@ use App\Repository\SiteRepository;
 use App\Service\RegexSyncService;
 use App\Repository\PageRepository;
 use App\Service\DetachedConsoleLauncher;
+use App\Service\CrawlOrchestrator;
 use App\Service\SiteReportService;
 use App\View\Renderer;
 
@@ -31,6 +32,7 @@ final class AdminController
         private readonly RegexSyncService $regexSyncService,
         private readonly DetachedConsoleLauncher $detachedConsoleLauncher,
         private readonly string $regexJsonPath,
+        private readonly CrawlOrchestrator $crawlOrchestrator,
         private readonly string $crawlerProgressToken = '',
         private readonly string $adminSecretPassword = 'лох',
     ) {
@@ -322,7 +324,7 @@ final class AdminController
     /** @param array<string, mixed> $server */
     public function ingestCrawlProgress(string $rawBody, array $server): void
     {
-        if (!$this->isCrawlerProgressAuthorized($server)) {
+        if (!$this->isCrawlerInternalAuthorized($server)) {
             $this->respondJson(403, ['ok' => false, 'error' => 'forbidden']);
         }
 
@@ -359,6 +361,43 @@ final class AdminController
             $eventLevel
         );
         $this->respondJson(200, ['ok' => true]);
+    }
+
+    public function ingestCrawledPage(string $rawBody, array $server): void
+    {
+        if (!$this->isCrawlerInternalAuthorized($server)) {
+            $this->respondJson(403, ['ok' => false, 'error' => 'forbidden']);
+        }
+
+        try {
+            /** @var mixed $decoded */
+            $decoded = json_decode($rawBody, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\Throwable) {
+            $this->respondJson(400, ['ok' => false, 'error' => 'invalid_json']);
+        }
+
+        if (!is_array($decoded)) {
+            $this->respondJson(400, ['ok' => false, 'error' => 'invalid_payload']);
+        }
+
+        $siteId = (int) ($decoded['siteId'] ?? 0);
+        $runId = (int) ($decoded['runId'] ?? 0);
+        $page = $decoded['page'] ?? null;
+        if ($siteId <= 0 || $runId <= 0 || !is_array($page)) {
+            $this->respondJson(422, ['ok' => false, 'error' => 'missing_page_payload']);
+        }
+
+        if (!$this->crawlRunRepository->isRunningForSite($runId, $siteId)) {
+            $this->respondJson(202, ['ok' => true, 'ignored' => 'run_not_running']);
+        }
+
+        $result = $this->crawlOrchestrator->ingestPage($siteId, $runId, $page);
+        $this->respondJson(200, [
+            'ok' => true,
+            'processed' => (bool) ($result['processed'] ?? false),
+            'skipped_matched' => (bool) ($result['skipped_matched'] ?? false),
+            'has_matches' => (bool) ($result['has_matches'] ?? false),
+        ]);
     }
 
     public function siteLive(int $siteId, bool $withDetails = false): void
@@ -759,7 +798,7 @@ final class AdminController
     }
 
     /** @param array<string, mixed> $server */
-    private function isCrawlerProgressAuthorized(array $server): bool
+    private function isCrawlerInternalAuthorized(array $server): bool
     {
         if ($this->crawlerProgressToken === '') {
             return true;

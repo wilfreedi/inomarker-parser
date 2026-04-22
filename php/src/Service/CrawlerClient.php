@@ -17,13 +17,19 @@ final class CrawlerClient
         ?callable $transport = null,
         private readonly string $progressEndpoint = '',
         private readonly string $progressToken = '',
+        private readonly string $pageEndpoint = '',
+        private readonly string $pageToken = '',
     ) {
         $this->transport = $transport;
     }
 
     /**
      * @param array<string, int> $options
-     * @return array<int, array<string, mixed>>
+     * @return array{
+     *   pages: array<int, array<string, mixed>>,
+     *   stats: array<string, mixed>,
+     *   streamed_pages: bool
+     * }
      */
     public function crawl(string $siteUrl, array $options): array
     {
@@ -64,6 +70,20 @@ final class CrawlerClient
                 'runId' => (int) $options['run_id'],
             ];
         }
+        if (
+            $this->pageEndpoint !== ''
+            && isset($options['site_id'], $options['run_id'])
+            && (int) $options['site_id'] > 0
+            && (int) $options['run_id'] > 0
+        ) {
+            $payloadData['pageCallback'] = [
+                'url' => $this->pageEndpoint,
+                'token' => $this->pageToken,
+                'siteId' => (int) $options['site_id'],
+                'runId' => (int) $options['run_id'],
+            ];
+            $payloadData['streamPages'] = true;
+        }
 
         $payload = json_encode($payloadData, JSON_THROW_ON_ERROR);
         $attempts = max(1, (int) ($options['retry_attempts'] ?? 2));
@@ -79,11 +99,22 @@ final class CrawlerClient
             if ($result['ok']) {
                 /** @var mixed $decoded */
                 $decoded = json_decode((string) $result['body'], true, 512, JSON_THROW_ON_ERROR);
-                if (!is_array($decoded) || !isset($decoded['pages']) || !is_array($decoded['pages'])) {
+                if (!is_array($decoded)) {
                     throw new \RuntimeException('Crawler response is malformed');
                 }
+                $pages = isset($decoded['pages']) && is_array($decoded['pages']) ? $decoded['pages'] : [];
+                $stats = isset($decoded['stats']) && is_array($decoded['stats']) ? $decoded['stats'] : [
+                    'returned' => count($pages),
+                    'visited' => count($pages),
+                    'truncated' => false,
+                    'stopReason' => 'unknown',
+                ];
 
-                return $decoded['pages'];
+                return [
+                    'pages' => $pages,
+                    'stats' => $stats,
+                    'streamed_pages' => (bool) ($decoded['streamedPages'] ?? false),
+                ];
             }
 
             $lastErrorMessage = (string) $result['error'];

@@ -10,6 +10,7 @@ use App\Repository\PageRepository;
 use App\Repository\RunRepository;
 use App\Repository\SiteRepository;
 use App\Service\CrawlOrchestrator;
+use App\Service\CrawledPageProcessor;
 use App\Service\CrawlerClient;
 use App\Service\PatternCatalog;
 use App\Tests\Support\DatabaseTestCase;
@@ -61,6 +62,7 @@ final class CrawlOrchestratorTest extends DatabaseTestCase
                     'pages' => [
                         ['url' => 'https://example.org', 'status' => 200, 'title' => 'Home', 'text' => 'Entity Alpha appears here'],
                     ],
+                    'stats' => ['returned' => 1],
                 ], JSON_THROW_ON_ERROR),
                 'error' => null,
                 'curl_failed' => false,
@@ -98,7 +100,7 @@ final class CrawlOrchestratorTest extends DatabaseTestCase
             return [
                 'ok' => true,
                 'status' => 200,
-                'body' => json_encode(['pages' => []], JSON_THROW_ON_ERROR),
+                'body' => json_encode(['pages' => [], 'stats' => ['returned' => 0]], JSON_THROW_ON_ERROR),
                 'error' => null,
                 'curl_failed' => false,
             ];
@@ -134,6 +136,7 @@ final class CrawlOrchestratorTest extends DatabaseTestCase
                     'pages' => [
                         ['url' => 'https://example.org', 'status' => 200, 'title' => 'Home', 'text' => 'entity alpha appears here, alpha appears too'],
                     ],
+                    'stats' => ['returned' => 1],
                 ], JSON_THROW_ON_ERROR),
                 'error' => null,
                 'curl_failed' => false,
@@ -167,6 +170,7 @@ final class CrawlOrchestratorTest extends DatabaseTestCase
                         ['url' => '', 'status' => 200, 'title' => 'Broken', 'text' => 'Entity Alpha'],
                         ['url' => 'not-a-url', 'status' => 200, 'title' => 'Broken 2', 'text' => 'Entity Alpha'],
                     ],
+                    'stats' => ['returned' => 2],
                 ], JSON_THROW_ON_ERROR),
                 'error' => null,
                 'curl_failed' => false,
@@ -202,6 +206,7 @@ final class CrawlOrchestratorTest extends DatabaseTestCase
                     'pages' => [
                         ['url' => 'https://example.org', 'status' => 200, 'title' => 'Home', 'text' => 'Entity Alpha appears here'],
                     ],
+                    'stats' => ['returned' => 1],
                 ], JSON_THROW_ON_ERROR),
                 'error' => null,
                 'curl_failed' => false,
@@ -226,17 +231,70 @@ final class CrawlOrchestratorTest extends DatabaseTestCase
         self::assertCount(2, $findingsAfter);
     }
 
-    /** @param callable(string, string): array{ok:bool,status:int,body:string|null,error:string|null,curl_failed:bool} $transport */
-    private function buildOrchestrator(callable $transport): CrawlOrchestrator
+    public function testScanCompletesWhenPagesAreStreamedIncrementally(): void
     {
         $siteRepository = new SiteRepository($this->pdo);
+        $siteRepository->create('Site A', 'https://example.org');
+        $site = $siteRepository->all()[0];
+        $siteId = (int) $site['id'];
+
+        $pageProcessor = new CrawledPageProcessor(
+            new PageRepository($this->pdo),
+            new FindingRepository($this->pdo),
+            new PatternCatalog($this->patternsPath)
+        );
+        $orchestrator = $this->buildOrchestrator(static function (string $_endpoint, string $payload) use ($pageProcessor): array {
+            $decoded = json_decode($payload, true, 512, JSON_THROW_ON_ERROR);
+            $pageCallback = $decoded['pageCallback'] ?? [];
+            $pageProcessor->process(
+                (int) ($pageCallback['siteId'] ?? 0),
+                (int) ($pageCallback['runId'] ?? 0),
+                ['url' => 'https://example.org/stream', 'status' => 200, 'title' => 'Stream', 'text' => 'Entity Alpha appears here']
+            );
+
+            return [
+                'ok' => true,
+                'status' => 200,
+                'body' => json_encode([
+                    'pages' => [],
+                    'stats' => ['returned' => 1],
+                    'streamedPages' => true,
+                ], JSON_THROW_ON_ERROR),
+                'error' => null,
+                'curl_failed' => false,
+            ];
+        }, enableStreaming: true);
+
+        $result = $orchestrator->scanSite($site, ['retry_attempts' => 1, 'retry_delay_ms' => 1]);
+        self::assertSame(1, $result['pages_total']);
+        self::assertSame(1, $result['pages_with_matches']);
+
+        $pages = (new PageRepository($this->pdo))->recentBySite($siteId, 5);
+        self::assertCount(1, $pages);
+        $findings = (new FindingRepository($this->pdo))->recentBySite($siteId, 10);
+        self::assertCount(2, $findings);
+    }
+
+    /** @param callable(string, string): array{ok:bool,status:int,body:string|null,error:string|null,curl_failed:bool} $transport */
+    private function buildOrchestrator(callable $transport, bool $enableStreaming = false): CrawlOrchestrator
+    {
+        $siteRepository = new SiteRepository($this->pdo);
+        $pageRepository = new PageRepository($this->pdo);
+        $findingRepository = new FindingRepository($this->pdo);
+        $patternCatalog = new PatternCatalog($this->patternsPath);
         return new CrawlOrchestrator(
             $siteRepository,
             new CrawlRunRepository($this->pdo),
-            new PageRepository($this->pdo),
-            new FindingRepository($this->pdo),
-            new CrawlerClient('http://crawler.local/crawl', $transport),
-            new PatternCatalog($this->patternsPath)
+            $findingRepository,
+            new CrawlerClient(
+                'http://crawler.local/crawl',
+                $transport,
+                '',
+                '',
+                $enableStreaming ? 'http://app.local/internal/crawl-page' : '',
+                $enableStreaming ? 'stream-token' : ''
+            ),
+            new CrawledPageProcessor($pageRepository, $findingRepository, $patternCatalog)
         );
     }
 }
