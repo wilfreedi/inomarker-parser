@@ -1719,6 +1719,7 @@ async function crawlSite(options) {
   const humanBehaviorEnabled = String(process.env.CRAWLER_HUMAN_BEHAVIOR_ENABLED || "0") === "1";
   const dynamicScrollEnabled = String(process.env.CRAWLER_DYNAMIC_SCROLL_ENABLED || "1") !== "0";
   const baseScrollEnabled = String(process.env.CRAWLER_BASE_SCROLL_ENABLED || "0") === "1";
+  const baseScrollOnSitemap = String(process.env.CRAWLER_BASE_SCROLL_ON_SITEMAP || "1") !== "0";
   const dynamicScrollMaxSteps = Math.max(0, Number(process.env.CRAWLER_DYNAMIC_SCROLL_MAX_STEPS || 8));
   const dynamicScrollStableSteps = Math.max(1, Number(process.env.CRAWLER_DYNAMIC_SCROLL_STABLE_STEPS || 2));
   const dynamicScrollPauseMinMs = Math.max(100, Number(process.env.CRAWLER_DYNAMIC_SCROLL_PAUSE_MIN_MS || 500));
@@ -1736,7 +1737,7 @@ async function crawlSite(options) {
   );
   const sitemapPagePauseMs = Math.max(0, Number(process.env.CRAWLER_SITEMAP_PAGE_PAUSE_MS || 200));
   const humanOnSitemap = String(process.env.CRAWLER_HUMAN_ON_SITEMAP || "0") === "1";
-  const dynamicOnSitemap = String(process.env.CRAWLER_DYNAMIC_ON_SITEMAP || "0") === "1";
+  const dynamicOnSitemap = String(process.env.CRAWLER_DYNAMIC_ON_SITEMAP || "1") !== "0";
   const pageRecycleEvery = Math.max(0, Number(process.env.CRAWLER_PAGE_RECYCLE_EVERY || 50));
   const pagePauseMs = Math.max(0, Number(options.pagePauseMs || 1000));
   const extractionReserveMs = Math.max(1200, Number(process.env.CRAWLER_EXTRACTION_RESERVE_MS || 3500));
@@ -1858,7 +1859,7 @@ async function crawlSite(options) {
     await reportProgress(progressCallback, {
       pagesVisited: 0,
       currentUrl: startUrl,
-      event: `Конфиг обхода: maxPages=${maxPages}, maxDepth=${maxDepth}, pagePauseMs=${pagePauseMs}, timeoutMs=${timeoutMs}, pageMaxMs=${pageMaxMs}, maxDurationMs=${maxDurationMs}, minRequestIntervalMs=${minRequestIntervalMs}, resourceBlocking=${resourcePolicy.enabled ? "1" : "0"}, blockedTypes=${resourcePolicy.blockedResourceTypes.size}, blockThirdPartyAssets=${resourcePolicy.blockThirdPartyAssets ? "1" : "0"}, sitemapEnabled=${sitemapEnabled ? "1" : "0"}, baseScroll=${baseScrollEnabled ? "1" : "0"}, dynamicScroll=${dynamicScrollEnabled ? "1" : "0"}, humanBehavior=${humanBehaviorEnabled ? "1" : "0"}, sitemapDiscoveryMaxMs=${sitemapDiscoveryMaxMs}, sitemapMaxFiles=${sitemapMaxFiles}, sitemapMaxUrls=${sitemapMaxUrls}`,
+      event: `Конфиг обхода: maxPages=${maxPages}, maxDepth=${maxDepth}, pagePauseMs=${pagePauseMs}, timeoutMs=${timeoutMs}, pageMaxMs=${pageMaxMs}, maxDurationMs=${maxDurationMs}, minRequestIntervalMs=${minRequestIntervalMs}, resourceBlocking=${resourcePolicy.enabled ? "1" : "0"}, blockedTypes=${resourcePolicy.blockedResourceTypes.size}, blockThirdPartyAssets=${resourcePolicy.blockThirdPartyAssets ? "1" : "0"}, sitemapEnabled=${sitemapEnabled ? "1" : "0"}, baseScroll=${baseScrollEnabled ? "1" : "0"}, baseScrollOnSitemap=${baseScrollOnSitemap ? "1" : "0"}, dynamicScroll=${dynamicScrollEnabled ? "1" : "0"}, dynamicOnSitemap=${dynamicOnSitemap ? "1" : "0"}, humanBehavior=${humanBehaviorEnabled ? "1" : "0"}, sitemapDiscoveryMaxMs=${sitemapDiscoveryMaxMs}, sitemapMaxFiles=${sitemapMaxFiles}, sitemapMaxUrls=${sitemapMaxUrls}`,
       eventLevel: "debug"
     });
 
@@ -2145,7 +2146,8 @@ async function crawlSite(options) {
             });
           }
 
-          if (baseScrollEnabled) {
+          const allowBaseScroll = baseScrollEnabled || (current.source === "sitemap" && baseScrollOnSitemap);
+          if (allowBaseScroll) {
             await ensureBottomScroll(page, {
               deadlineAt: pageDeadlineAt,
               abortSignal,
@@ -2165,7 +2167,9 @@ async function crawlSite(options) {
             });
           }
 
-          const allowDynamicScroll = dynamicScrollEnabled && (current.source !== "sitemap" || dynamicOnSitemap);
+          const allowDynamicScroll = current.source === "sitemap"
+            ? dynamicOnSitemap
+            : dynamicScrollEnabled;
           const remainingBeforeDynamicMs = remainingMs(pageDeadlineAt);
           if (allowDynamicScroll && !throughputMode && remainingBeforeDynamicMs > extractionReserveMs + 1200) {
             const dynamicTimeBudgetMs = Math.min(dynamicBudgetMs, remainingBeforeDynamicMs - extractionReserveMs);
