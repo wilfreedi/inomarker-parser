@@ -957,6 +957,40 @@ async function createIsolatedContext(browser) {
   throw new Error("Browser context API is unavailable");
 }
 
+async function closePageQuietly(page, popupHandler) {
+  if (!page) {
+    return;
+  }
+  try {
+    if (typeof page.off === "function" && popupHandler) {
+      page.off("popup", popupHandler);
+    }
+    if (typeof page.removeAllListeners === "function") {
+      page.removeAllListeners("request");
+      page.removeAllListeners("popup");
+    }
+    if (typeof page.isClosed === "function" && page.isClosed()) {
+      return;
+    }
+    await page.close({ runBeforeUnload: false }).catch(() => undefined);
+  } catch (_) {
+    // ignore page-level close errors, browser-level cleanup below is authoritative
+  }
+}
+
+async function forceKillBrowserProcess(browserProcess) {
+  if (!browserProcess || typeof browserProcess.kill !== "function") {
+    return;
+  }
+  try {
+    if (!browserProcess.killed) {
+      browserProcess.kill("SIGKILL");
+    }
+  } catch (_) {
+    // ignore kill errors
+  }
+}
+
 function createRequestPacer(options) {
   const minIntervalMs = Math.max(0, Number(options.minIntervalMs ?? 1000));
   const jitterMinMs = Math.max(0, Number(options.jitterMinMs ?? 0));
@@ -1783,6 +1817,7 @@ async function crawlSite(options) {
   }
 
   const browser = await puppeteer.launch(launchOptions);
+  const browserProcess = typeof browser.process === "function" ? browser.process() : null;
 
   const context = await createIsolatedContext(browser);
   const sessionProfile = createSessionProfile();
@@ -1831,15 +1866,40 @@ async function crawlSite(options) {
       return;
     }
     contextClosed = true;
-    if (metadataPage !== null) {
-      metadataPage.off("popup", popupHandler);
-      await metadataPage.close().catch(() => undefined);
+    try {
+      let contextPages = [];
+      if (context && typeof context.pages === "function") {
+        contextPages = await context.pages().catch(() => []);
+      }
+      const pagesToClose = [];
+      if (metadataPage !== null) {
+        pagesToClose.push(metadataPage);
+      }
+      pagesToClose.push(page);
+      if (Array.isArray(contextPages)) {
+        for (const contextPage of contextPages) {
+          if (contextPage && !pagesToClose.includes(contextPage)) {
+            pagesToClose.push(contextPage);
+          }
+        }
+      }
+      for (const pageToClose of pagesToClose) {
+        await closePageQuietly(pageToClose, popupHandler);
+      }
       metadataPage = null;
+      await context.close().catch(() => undefined);
+      const browserClosed = await withHardTimeout(
+        browser.close().then(() => true).catch(() => false),
+        5000,
+        () => false
+      );
+      if (!browserClosed) {
+        console.warn("[crawler] browser.close() did not finish cleanly, forcing Chromium shutdown");
+        await forceKillBrowserProcess(browserProcess);
+      }
+    } finally {
+      await forceKillBrowserProcess(browserProcess);
     }
-    page.off("popup", popupHandler);
-    await page.close().catch(() => undefined);
-    await context.close().catch(() => undefined);
-    await browser.close().catch(() => undefined);
   };
   const abortHandler = () => {
     stopReason = "request_aborted";
